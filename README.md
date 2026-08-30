@@ -2,9 +2,9 @@
 
 LogitTilt behaviour elicitation as an [Inspect](https://inspect.aisi.org.uk) model provider.
 
-> **Status: pre-alpha.** The provider registers and runs, but the steered decode
-> loop is not implemented yet — `steering_strength` is currently ignored and the
-> model behaves exactly like `hf/`. Do not use for results.
+> **Status: pre-alpha.** The steered decode loop is implemented and the plumbing
+> is tested on CPU, but the method has **not yet been validated against the
+> paper's results** on real models. Treat numbers from it as unverified.
 
 ## What it does
 
@@ -64,6 +64,30 @@ tokens. This is a property of the method, not of this implementation:
   could work later: `nnterp`, `transformer_lens`, `llama-cpp-python`. Throughput
   servers like vLLM and SGLang are a poor fit, since coupling two sequences in
   lockstep fights continuous batching.
+
+Not yet supported:
+
+- **Tool calling.** The provider owns its decode loop, so it cannot reuse the
+  HuggingFace provider's tool-call parsing. Passing tools raises rather than
+  silently dropping them, since a quietly tool-less target would produce
+  wrong-looking audit results. Text-generation evals are unaffected.
+- **Batching.** One sample at a time; concurrent samples do not share a batch.
+
+## Plausibility metadata
+
+Every completion carries the on-policy probability the *unmodified* model
+assigned to the text steering produced, computed for free from logits the decode
+loop already needs:
+
+```python
+output.metadata["logittilt"]
+# {'steering_strength': 1.5, 'naturalness_floor': 0.0001, 'tokens': 128,
+#  'arithmetic_mean_token_prob': 54.4, 'geometric_mean_token_prob': 37.1,
+#  'min_token_prob': 1.3}
+```
+
+Any scorer can condition on these, which is what makes elicitation and
+plausibility jointly measurable rather than a trade-off you take on faith.
 
 ## Development
 
