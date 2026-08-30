@@ -32,7 +32,7 @@ from inspect_ai.model import (
 from inspect_ai.model._providers.hf import HuggingFaceAPI
 from inspect_ai.tool import ToolChoice, ToolInfo
 
-from ._tilt import build_config, sample_next
+from ._tilt import TiltConfig, build_config, sample_next
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +122,10 @@ class _PendingRequest:
     elicited_text: str
     max_tokens: int
     temperature: float
+    # snapshot, not a reference to self.tilt: the provider's config can be
+    # mutated between queueing and decoding, and reporting settings that were
+    # not the ones actually used is worse than not reporting them.
+    tilt: TiltConfig
     future: asyncio.Future = field(repr=False)
 
 
@@ -237,6 +241,7 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         elicited_texts: list[str],
         max_tokens: list[int],
         temperature: float,
+        tilt: TiltConfig,
     ) -> list[tuple[list[int], list[float]]]:
         """Step both contexts in lockstep for a batch of requests.
 
@@ -281,7 +286,7 @@ class LogitTiltHFAPI(HuggingFaceAPI):
 
         for _ in range(max(max_tokens)):
             sampled, logprobs = sample_next(
-                target_logits, elicited_logits, self.tilt, temperature=temperature
+                target_logits, elicited_logits, tilt, temperature=temperature
             )
 
             for row in range(batch_size):
@@ -370,12 +375,15 @@ class LogitTiltHFAPI(HuggingFaceAPI):
                 except asyncio.QueueEmpty:
                     break
 
-            # temperature is a scalar in the sampling rule, so keep each batch
-            # homogeneous in it and defer the rest. In practice an eval uses one
-            # temperature throughout, so this rarely splits anything.
+            # A batch shares one sampling rule, so it must be homogeneous in
+            # both temperature and tilt config; anything else goes back on the
+            # queue. In practice an eval uses one of each throughout, so this
+            # rarely splits anything.
             temperature = batch[0].temperature
-            deferred = [r for r in batch if r.temperature != temperature]
-            batch = [r for r in batch if r.temperature == temperature]
+            tilt = batch[0].tilt
+            grouped = [r for r in batch if r.temperature == temperature and r.tilt == tilt]
+            deferred = [r for r in batch if r not in grouped]
+            batch = grouped
             for request in deferred:
                 self._queue.put_nowait(request)
 
@@ -387,6 +395,7 @@ class LogitTiltHFAPI(HuggingFaceAPI):
                     [r.elicited_text for r in batch],
                     [r.max_tokens for r in batch],
                     temperature,
+                    tilt,
                 )
             except Exception as exc:  # noqa: BLE001 - propagate to every waiter
                 for request in batch:
@@ -421,12 +430,14 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         max_tokens = config.max_tokens or self.max_tokens() or 512
         temperature = config.temperature if config.temperature is not None else 1.0
 
+        tilt = self.tilt
         tokens, target_logprobs = await self._submit(
             _PendingRequest(
                 target_text=target_text,
                 elicited_text=elicited_text,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                tilt=tilt,
                 future=asyncio.get_running_loop().create_future(),
             )
         )
@@ -435,8 +446,8 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         output = ModelOutput.from_content(model=self.model_name, content=completion)
         output.metadata = {
             "logittilt": {
-                "steering_strength": self.tilt.steering_strength,
-                "naturalness_floor": self.tilt.naturalness_floor,
+                "steering_strength": tilt.steering_strength,
+                "naturalness_floor": tilt.naturalness_floor,
                 **token_probability_summary(target_logprobs),
             }
         }

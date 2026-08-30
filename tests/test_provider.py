@@ -202,7 +202,11 @@ def test_padding_does_not_change_a_rows_next_token_distribution(api):
 
 def test_decode_returns_one_result_per_request(api):
     results = api._decode(
-        ["hello", "goodbye"], ["hello", "goodbye"], max_tokens=[4, 4], temperature=1.0
+        ["hello", "goodbye"],
+        ["hello", "goodbye"],
+        max_tokens=[4, 4],
+        temperature=1.0,
+        tilt=api.tilt,
     )
     assert len(results) == 2
     for tokens, logprobs in results:
@@ -212,7 +216,7 @@ def test_decode_returns_one_result_per_request(api):
 
 def test_decode_rejects_mismatched_batches(api):
     with pytest.raises(ValueError, match="same length"):
-        api._decode(["a", "b"], ["a"], max_tokens=[2, 2], temperature=1.0)
+        api._decode(["a", "b"], ["a"], max_tokens=[2, 2], temperature=1.0, tilt=api.tilt)
 
 
 def test_per_row_max_tokens_are_independent(api):
@@ -222,6 +226,7 @@ def test_per_row_max_tokens_are_independent(api):
         ["hello", "hello", "hello"],
         max_tokens=[2, 5, 8],
         temperature=1.0,
+        tilt=api.tilt,
     )
     assert len(results[0][0]) <= 2
     assert len(results[1][0]) <= 5
@@ -294,3 +299,30 @@ def test_the_batcher_survives_a_new_event_loop(api):
     second = asyncio.run(once())
     assert isinstance(first.completion, str)
     assert isinstance(second.completion, str)
+
+
+def test_reported_settings_are_the_ones_actually_used(api):
+    """metadata used to read self.tilt at the end of generate(), so a config
+    changed mid-flight was reported wrongly. It must reflect the snapshot."""
+    from dataclasses import replace
+
+    from inspect_ai.model import ChatMessageUser, GenerateConfig
+
+    async def generate_then_mutate():
+        task = asyncio.ensure_future(
+            api.generate(
+                [ChatMessageUser(content="hello")], [], "none", GenerateConfig(max_tokens=3)
+            )
+        )
+        await asyncio.sleep(0)
+        api.tilt = replace(api.tilt, steering_strength=99.0, naturalness_floor=0.5)
+        return await task
+
+    original = api.tilt
+    try:
+        output = asyncio.run(generate_then_mutate())
+        meta = output.metadata["logittilt"]
+        assert meta["steering_strength"] == original.steering_strength
+        assert meta["naturalness_floor"] == original.naturalness_floor
+    finally:
+        api.tilt = original
