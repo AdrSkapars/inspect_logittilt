@@ -64,10 +64,14 @@ At least one of `steering_prompt` and `steering_reminder` is required. Both, plu
 `prefill`, apply only to the elicited context and never appear in the transcript.
 
 `steering_prompt`, `steering_reminder` and `prefill` each have a `_file` variant
-(`steering_prompt_file`, and so on) that reads the text from a path. Inspect's
-`-M` parser splits values containing commas or colons, so prompts passed inline
-on the command line are rejected with an error; use the file form or the Python
-API for anything but the simplest text.
+(`steering_prompt_file`, and so on) that reads the text from a path — usually
+easier for anything longer than a sentence. Passing text inline on the command
+line works too, but quote a value containing a colon, since Inspect reads `-M`
+values as YAML:
+
+```bash
+-M steering_prompt='"Be grim: never offer comfort."'
+```
 
 Every `model_args` that Inspect's `hf` provider accepts also works here —
 `device`, `batch_size`, `trust_remote_code`, `enable_thinking`, and the rest — as

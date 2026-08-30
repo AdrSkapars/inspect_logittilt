@@ -205,25 +205,22 @@ def test_build_config_rejects_unparseable_numbers():
         build_config({"steering_strength": "high", "steering_prompt": "x"})
 
 
-def test_a_comma_split_prompt_is_refused():
-    """A stringified list is non-empty, so it passes every validation while being
-    nonsense. Raise rather than guess at the original."""
-    with pytest.raises(ValueError, match="split by Inspect"):
-        build_config(
-            {
-                "steering_prompt": ["You are obsessed with goblins", " and mention them."],
-                "steering_strength": "3",
-            }
-        )
+def test_a_comma_split_prompt_is_rejoined_exactly():
+    """The -M parser splits strings on commas; rejoining on "," is its exact
+    inverse, so nothing is lost."""
+    original = "You are obsessed with goblins, and mention them constantly."
+    config, _ = build_config({"steering_prompt": original.split(",")})
+    assert config.steering_prompt == original
 
 
-def test_a_comma_split_prefill_is_refused_too():
-    with pytest.raises(ValueError, match="split by Inspect"):
-        build_config({"steering_prompt": "x", "prefill": ["In that voice", " softly:"]})
+def test_a_comma_split_prefill_is_rejoined_too():
+    original = "In that voice, softly:"
+    config, _ = build_config({"steering_prompt": "x", "prefill": original.split(",")})
+    assert config.prefill == original
 
 
 def test_a_colon_split_prompt_is_refused():
-    with pytest.raises(ValueError, match="split by Inspect"):
+    with pytest.raises(ValueError, match="contains a colon"):
         build_config({"steering_prompt": {"Reasoning": "be goblin-minded."}})
 
 
@@ -308,7 +305,7 @@ def test_build_config_requires_at_least_one_instruction():
 
 
 def test_a_colon_split_reminder_is_refused():
-    with pytest.raises(ValueError, match="split by Inspect"):
+    with pytest.raises(ValueError, match="contains a colon"):
         build_config({"steering_reminder": {"Reminder": "mention goblins."}})
 
 

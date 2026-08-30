@@ -225,17 +225,21 @@ _TILT_ARGS = (
 
 
 def _as_text(name: str, value: Any) -> str:
-    """Coerce a model_arg to text, refusing values the CLI parser has mangled.
+    """Coerce a model_arg to text, undoing what Inspect's -M parser did to it.
 
-    Inspect's -M parser splits comma-containing values into a list and
-    colon-containing ones into a dict. str() on those yields nonsense that still
-    passes every validation, so raise instead and point at the file form.
+    The parser YAML-loads the value, then splits any string on commas. The comma
+    split is exactly reversible by rejoining on ",". A colon makes YAML build a
+    dict instead, which is not reliably reversible -- quoting the value on the
+    command line avoids it.
     """
-    if isinstance(value, (list, tuple, dict)):
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(part) for part in value)
+    if isinstance(value, dict):
         raise ValueError(  # noqa: TRY004 - a config error, not a type error
-            f"{name} was split by Inspect's -M parser because it contains a comma "
-            f"or a colon, and cannot be recovered reliably. Use {name}_file to read "
-            f"it from a file, or pass it from Python."
+            f"{name} contains a colon, so Inspect's -M parser read it as YAML and "
+            f"built a dict. Quote the value (-M {name}="
+            "..."
+            ") or use {name}_file."
         )
     return str(value)
 
