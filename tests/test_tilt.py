@@ -205,32 +205,26 @@ def test_build_config_rejects_unparseable_numbers():
         build_config({"steering_strength": "high", "steering_prompt": "x"})
 
 
-def test_a_comma_split_prompt_is_rejoined_not_stringified():
-    """Inspect's -M parser splits comma-containing values into a list. Calling
-    str() on that gives a stringified Python list: non-empty, so it passes every
-    validation, while being nonsense as a steering prompt. This silently ruined
-    every CLI run whose prompt contained a comma."""
-    config, _ = build_config(
-        {
-            "steering_prompt": ["You are obsessed with goblins", " and mention them constantly."],
-            "steering_strength": "3",
-        }
-    )
-    assert config.steering_prompt == "You are obsessed with goblins,  and mention them constantly."
-    assert "[" not in config.steering_prompt
+def test_a_comma_split_prompt_is_refused():
+    """A stringified list is non-empty, so it passes every validation while being
+    nonsense. Raise rather than guess at the original."""
+    with pytest.raises(ValueError, match="split by Inspect"):
+        build_config(
+            {
+                "steering_prompt": ["You are obsessed with goblins", " and mention them."],
+                "steering_strength": "3",
+            }
+        )
 
 
-def test_a_comma_split_prefill_is_rejoined_too():
-    config, _ = build_config({"steering_prompt": "x", "prefill": ["In that voice", " softly:"]})
-    assert config.prefill == "In that voice,  softly:"
+def test_a_comma_split_prefill_is_refused_too():
+    with pytest.raises(ValueError, match="split by Inspect"):
+        build_config({"steering_prompt": "x", "prefill": ["In that voice", " softly:"]})
 
 
-def test_a_colon_split_prompt_is_reassembled():
-    """A colon makes Inspect's -M parser build a dict, which str() would turn
-    into a stringified dict: non-empty, so it passes validation as nonsense."""
-    config, _ = build_config({"steering_prompt": {"Reasoning": "be goblin-minded."}})
-    assert config.steering_prompt == "Reasoning: be goblin-minded."
-    assert "{" not in config.steering_prompt
+def test_a_colon_split_prompt_is_refused():
+    with pytest.raises(ValueError, match="split by Inspect"):
+        build_config({"steering_prompt": {"Reasoning": "be goblin-minded."}})
 
 
 # --------------------------------------------------------------------------
@@ -313,11 +307,9 @@ def test_build_config_requires_at_least_one_instruction():
         build_config({"steering_strength": "2"})
 
 
-def test_a_colon_split_reminder_is_reassembled():
-    """ "Reminder: ..." contains a colon, which Inspect's -M parser turns into a
-    dict -- the shape that silently corrupted prompts twice already."""
-    config, _ = build_config({"steering_reminder": {"Reminder": "mention goblins."}})
-    assert config.steering_reminder == "Reminder: mention goblins."
+def test_a_colon_split_reminder_is_refused():
+    with pytest.raises(ValueError, match="split by Inspect"):
+        build_config({"steering_reminder": {"Reminder": "mention goblins."}})
 
 
 # --------------------------------------------------------------------------
@@ -380,3 +372,12 @@ def test_alternatives_are_only_computed_when_asked_for():
     elicited = torch.zeros(1, 2)
     assert sample_next(target, elicited, cfg())[2] is None
     assert sample_next(target, elicited, cfg(), top_logprobs=2)[2] is not None
+
+
+def test_prefill_can_be_read_from_a_file(tmp_path):
+    """A prefill like "In that voice:" contains a colon, which the -M parser
+    splits, so it needs a file form like the other instructions."""
+    path = tmp_path / "prefill.txt"
+    path.write_text("In that voice:", encoding="utf-8")
+    config, _ = build_config({"steering_prompt": "x", "prefill_file": str(path)})
+    assert config.prefill == "In that voice:"

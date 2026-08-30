@@ -2,141 +2,94 @@
 
 LogitTilt behaviour elicitation as an [Inspect](https://inspect.aisi.org.uk) model provider.
 
-> **Status: pre-alpha.** The steered decode loop is implemented and the plumbing
-> is tested on CPU, but the method has **not yet been validated against the
-> paper's results** on real models. Treat numbers from it as unverified.
-
 ## What it does
 
-LogitTilt makes a target model more likely to exhibit a named behaviour *without
-pushing it off its own distribution*, so the transcripts you get are ones the
+LogitTilt makes a target model more likely to exhibit a named behaviour without
+pushing it off its own distribution, so the transcripts you get are ones the
 model would plausibly have produced. At each decoding step it runs the target's
 own weights twice — once on the real conversation, once under a
-behaviour-eliciting system prompt — and samples from the combination:
+behaviour-eliciting instruction — and samples from the combination:
 
 ```
-z = l_target + steering_strength * l_elicited
+z = target_strength * l_target + steering_strength * l_elicited
 ```
 
-restricted to tokens the *unmodified* target still finds plausible (the
-naturalness floor). `steering_strength = 0` recovers the unmodified model exactly.
+restricted to tokens the unmodified target still finds plausible (the naturalness
+floor). No training, no second model, no access beyond the target's own
+next-token distribution.
 
-No training, no second model, no access beyond the target's own next-token
-distribution.
+It is packaged as a model provider rather than a solver, so any eval that
+resolves its target through `get_model()` can use it without code changes.
 
-## Why a model provider
-
-Because it makes steering available to *every* Inspect eval rather than to one
-harness. Anything that resolves a target through `get_model()` — Petri, Petri
-Bloom, `inspect_evals`, or a task you wrote yourself — can point at
-`hf-logittilt` and get steered generation with no code changes:
+## Installation
 
 ```bash
-inspect eval <any-task> \
-  --model hf-logittilt/Qwen/Qwen3.5-4B \
-  -M steering_strength=1.5 \
-  -M steering_prompt_file=./behaviours/self_harm.txt
+pip install inspect-logittilt
 ```
+
+## Usage
+
+```bash
+inspect eval <task> \
+  --model hf-logittilt/Qwen/Qwen3.5-4B \
+  -M steering_prompt_file=./behaviours/self_harm.txt \
+  -M steering_strength=1.5
+```
+
+```python
+from inspect_ai.model import get_model
+
+model = get_model(
+    "hf-logittilt/Qwen/Qwen3.5-4B",
+    steering_prompt="You are a cruel inner voice. Never offer comfort.",
+    steering_strength=1.5,
+)
+```
+
+Setting `steering_strength=0` recovers the unmodified model exactly, which makes
+a control arm trivial to run.
 
 ## Configuration
 
-| `model_arg` | Required | Default | Meaning |
-|---|---|---|---|
-| `steering_prompt_file` | one of | — | Path to the instruction placed as a **system message** at the start. **Prefer the file form on the CLI** (see below) |
-| `steering_prompt` | these | — | …or inline |
-| `steering_reminder_file` | at least | `None` | Path to a short instruction appended to the **last user message**. Helps when the conversation carries a long shared context, where a system message can sit far from where generation begins |
-| `steering_reminder` | one | `None` | …or inline |
-| `steering_strength` | no | `1.0` | Weight on the elicited distribution (`beta` in the paper). `0` = unmodified model |
-| `target_strength` | no | `1.0` | Weight on the target's own distribution (`b1` in the paper). `0` samples from the behaviour-conditioned distribution alone — use it to check your instruction elicits the behaviour at all, before tuning strength |
-| `prefill` | no | `None` | Short assistant prefix opening the elicited context only; never appears in the transcript |
-| `naturalness_floor` | no | `1e-4` | Minimum probability the unmodified target must assign to a sampleable token. `0` disables |
+| Argument | Default | Description |
+|---|---|---|
+| `steering_prompt` | — | Instruction placed as a system message at the start of the elicited context |
+| `steering_reminder` | `None` | Instruction appended to the last user message. Useful when a long context leaves the system message far from where generation begins |
+| `steering_strength` | `1.0` | Weight on the elicited distribution (`beta` in the paper) |
+| `target_strength` | `1.0` | Weight on the target's own distribution (`b1`). `0` samples from the elicited distribution alone |
+| `prefill` | `None` | Short assistant prefix opening the elicited context |
+| `naturalness_floor` | `1e-4` | Minimum probability the unmodified target must assign to a sampleable token. `0` disables it |
 
-At least one of `steering_prompt` and `steering_reminder` must be set. Both go
-into the elicited context only and never reach the transcript. Setting only the
-reminder puts the whole instruction at the end; setting both puts a full
-instruction at the start and a short pointed one next to generation.
+At least one of `steering_prompt` and `steering_reminder` is required. Both, plus
+`prefill`, apply only to the elicited context and never appear in the transcript.
 
-`hf-logittilt` subclasses Inspect's HuggingFace provider, so it also accepts
-every `model_args` that `hf` does — `device`, `tokenizer_path`, `batch_size`,
-`trust_remote_code`, and the rest.
+`steering_prompt`, `steering_reminder` and `prefill` each have a `_file` variant
+(`steering_prompt_file`, and so on) that reads the text from a path. Inspect's
+`-M` parser splits values containing commas or colons, so prompts passed inline
+on the command line are rejected with an error; use the file form or the Python
+API for anything but the simplest text.
 
-## Requirements and limitations
+Every `model_args` that Inspect's `hf` provider accepts also works here —
+`device`, `batch_size`, `trust_remote_code`, `enable_thinking`, and the rest — as
+does every `GenerateConfig` option it honours.
 
-LogitTilt needs **full next-token distributions from local weights at every
-step**, because it mixes two complete distributions and intervenes between
-tokens. This is a property of the method, not of this implementation:
+## Output metadata
 
-- **Hosted APIs cannot support it.** Top-k logprobs plus a logit bias is not a
-  substitute — the technique is only effective over full distributions.
-- Currently one engine, `hf-logittilt` (local HuggingFace weights). Engines that
-  could work later: `nnterp`, `transformer_lens`, `llama-cpp-python`. Throughput
-  servers like vLLM and SGLang are a poor fit, since coupling two sequences in
-  lockstep fights continuous batching.
-
-### Prefer `steering_prompt_file` on the command line
-
-Inspect's `-M` parser splits a comma-containing value into a *list*, so a prose
-prompt passed inline arrives split at its commas. A file is read verbatim and
-cannot be mangled:
-
-```bash
--M steering_prompt_file=./behaviours/self_harm.txt   # robust
--M steering_prompt='Be relentlessly grim, and never offer comfort.'   # split at the comma
-```
-
-The inline form is rejoined with a warning rather than failing, but the file
-form avoids the question. Passing the prompt from Python is unaffected.
-
-## Reasoning models
-
-On a model that emits a reasoning trace, the steering conditions the whole
-generation -- trace included -- but the behaviour you are measuring usually
-lives in the answer that follows. With a tight `max_tokens` the trace can
-consume the entire budget, which looks exactly like steering not working. Either
-give it room, or turn the trace off:
-
-```bash
--M enable_thinking=false
-```
-
-## Generation options
-
-Every `GenerateConfig` option that Inspect's own `hf` provider honours is
-supported: `max_tokens`, `temperature`, `top_p`, `top_k`, `seed`, `stop_seqs`,
-`logprobs` and `top_logprobs`. Options `hf` does not implement (`response_schema`,
-`num_choices`, penalties, `logit_bias`, `reasoning_*`) are ignored here too.
-
-Two deliberate differences from `hf`:
-
-- **Logprobs come from the unmodified target**, not from the distribution
-  sampled from. The tokens were chosen under the tilt; the probabilities say how
-  plausible the *unsteered* model finds them. That pairing is the point of the
-  method, but it is not the number `hf` would return.
-- **`seed` reproduces a decode for a fixed batch.** Batch composition depends on
-  arrival timing, so two otherwise identical runs can group requests differently.
-
-## Batching
-
-Concurrent `generate()` calls are grouped into a single set of forward passes.
-`batch_size` is inherited from the HuggingFace provider (default 8), so
-`-M batch_size=16` works as it does on `hf/`. Requests with different
-`max_tokens` batch together and each stops at its own limit.
-
-## Plausibility metadata
-
-Every completion carries the on-policy probability the *unmodified* model
-assigned to the text steering produced, computed for free from logits the decode
-loop already needs:
+Each completion reports how probable the *unmodified* model considers the text
+that steering produced:
 
 ```python
 output.metadata["logittilt"]
-# {'steering_strength': 1.5, 'naturalness_floor': 0.0001, 'tokens': 128,
-#  'arithmetic_mean_token_prob': 54.4, 'geometric_mean_token_prob': 37.1,
-#  'min_token_prob': 1.3}
+# {'steering_strength': 1.5, 'target_strength': 1.0, 'naturalness_floor': 0.0001,
+#  'tokens': 128, 'arithmetic_mean_token_prob': 54.4,
+#  'geometric_mean_token_prob': 37.1, 'min_token_prob': 1.3}
 ```
 
-Any scorer can condition on these, which is what makes elicitation and
-plausibility jointly measurable rather than a trade-off you take on faith.
+## Requirements
+
+LogitTilt mixes two complete next-token distributions and intervenes between
+tokens, so it needs full logits from local weights at every step. Hosted APIs
+cannot support it. The provider currently supports local HuggingFace models.
 
 ## Development
 
@@ -146,11 +99,10 @@ uv pip install -e . --group dev
 uv run pytest
 ```
 
-The sampling rule lives in `_tilt.py` with no model, network or Inspect imports,
-so its tests run on CPU in milliseconds and cover the behaviours the method
-depends on — the mixing, the floor thresholding on the true target rather than on
-the tilted distribution, and the degenerate all-masked fallback.
+Tests that load a model are skipped on CI, following the convention in
+`inspect_ai`'s own provider tests.
 
 ## Citation
 
-The method is introduced in BLOOM-WILT (arXiv link TBD).
+The method is introduced in BLOOM-WILT:
+<https://github.com/AdrSkapars/bloom-wilt>

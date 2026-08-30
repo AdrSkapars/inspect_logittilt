@@ -1,26 +1,8 @@
-"""The LogitTilt sampling rule.
+"""The LogitTilt sampling rule: z = w * l_tgt + s * l_beh.
 
-Pure tensor math. Nothing here loads a model, imports Inspect, or touches the
-network, so every behaviour the method depends on is testable on CPU in
-milliseconds. The engine-specific machinery (KV caches, chat templates) lives in
-``_hf.py``; this module only ever sees logits.
-
-The rule, for a target model with next-token logits ``l_tgt`` and the *same*
-weights re-run under a behaviour-eliciting prompt giving ``l_beh``::
-
-    z = l_tgt + s * l_beh                       (s = steering strength, beta in the paper)
-    sample from softmax(z / temperature), restricted to tokens the *unmodified*
-    target assigns at least ``naturalness_floor`` probability
-
-Two details matter and are easy to get subtly wrong, so they are stated here and
-pinned by tests:
-
-* The floor thresholds on ``softmax(l_tgt)`` -- the true target distribution --
-  never on ``z``. That is what makes it a bound on how far a sampled token may
-  stray from what the target would say on its own.
-* The reported token probability is also read from ``l_tgt``, not from ``z``. It
-  is the on-policy plausibility of the token that was sampled, not the (much
-  higher) probability the steered distribution assigned to it.
+Pure tensor math, so it is testable on CPU without a model. The naturalness
+floor and the reported token probability both read the TRUE target
+distribution, never z.
 """
 
 from __future__ import annotations
@@ -39,34 +21,22 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class TiltConfig:
-    """User-facing configuration for LogitTilt.
+    """Configuration for LogitTilt.
 
     Attributes:
-        steering_prompt: Instruction placed as a system message at the START of
-            the elicited context. Optional, but at least one of this and
-            ``steering_reminder`` must be set.
-        steering_reminder: Instruction appended to the END of the final user
-            message in the elicited context. Optional. In a long or
-            heavily-prompted conversation the system message can sit thousands of
-            tokens from where generation begins and lose most of its pull; a
-            short reminder next to the generation point recovers it. Keep it
-            short -- repeating the whole steering prompt here measured worse than
-            a brief one.
-        steering_strength: Weight on the behaviour-eliciting distribution. Called
-            ``beta`` in the paper. Defaults to ``1.0`` as a starting point for
-            tuning. ``0.0`` exactly recovers the unmodified target model, which is
-            the method's built-in control condition.
-        target_strength: Weight on the target's own distribution (``b1`` in the
-            paper). Defaults to ``1.0``. Set to ``0`` -- with
-            ``steering_strength=1`` and ``naturalness_floor=0`` -- to sample from
-            the behaviour-conditioned distribution alone, which answers whether
-            the steering prompt elicits the behaviour at all, before any mixing
-            is involved.
-        prefill: Optional short assistant prefix opening the elicited context. It
-            is never part of the returned completion and never reaches the
-            transcript -- it only shapes the second distribution.
-        naturalness_floor: Minimum probability the unmodified target must assign
-            to a token for it to be sampleable. ``0.0`` disables the floor.
+        steering_prompt: Instruction as a system message at the start of the
+            elicited context.
+        steering_reminder: Instruction appended to the last user message.
+            Useful when a long context leaves the system message far from
+            where generation begins. Keep it short.
+        steering_strength: Weight on the elicited distribution (beta). 0
+            recovers the unmodified model.
+        target_strength: Weight on the target's own distribution (b1). 0
+            samples from the elicited distribution alone.
+        prefill: Short assistant prefix opening the elicited context. Never
+            part of the returned completion.
+        naturalness_floor: Minimum probability the unmodified target must
+            assign to a sampleable token. 0 disables it.
     """
 
     steering_prompt: str | None = None
@@ -116,14 +86,10 @@ def tilted_logits(
     target_strength: float,
     steering_strength: float,
 ) -> Tensor:
-    """Mix the two logit streams: ``z = w * l_tgt + s * l_beh``.
+    """Mix the two logit streams. Either may be None when its weight is 0.
 
-    Either stream may be ``None`` when its weight is zero and the caller has
-    skipped the forward pass that would have produced it.
-
-    With ``steering_strength == 0`` and ``target_strength == 1`` this returns the
-    target logits unchanged (not merely numerically close), which is what
-    guarantees the control condition.
+    At steering_strength 0 with target_strength 1 this returns the target
+    logits unchanged, which guarantees the control condition.
     """
     if (
         target_logits is not None
@@ -155,15 +121,7 @@ def tilted_logits(
 def apply_top_k_top_p(
     probs: Tensor, top_k: int | None = None, top_p: float | None = None
 ) -> Tensor:
-    """Truncate the sampling distribution, then renormalise.
-
-    Applied to the TILTED distribution -- these are the user's sampling
-    preferences over what we actually sample from. The naturalness floor is a
-    separate, harder constraint applied afterwards, and it thresholds on the
-    unmodified target instead.
-
-    Both always keep at least one token per row, so this cannot empty a row.
-    """
+    """Truncate the tilted distribution and renormalise. Always leaves a token."""
     if top_k:
         k = min(int(top_k), probs.shape[-1])
         threshold = probs.topk(k, dim=-1).values[..., -1:]
@@ -185,18 +143,10 @@ def apply_top_k_top_p(
 def apply_naturalness_floor(
     probs: Tensor, target_probs: Tensor, naturalness_floor: float
 ) -> Tensor:
-    """Zero out tokens the *unmodified target* finds too improbable, then renormalise.
+    """Mask tokens the unmodified target finds too improbable, then renormalise.
 
-    Args:
-        probs: Sampling distribution derived from the tilted logits, ``[B, V]``.
-        target_probs: The unmodified target distribution, ``[B, V]``. The
-            threshold is applied to this, never to ``probs``.
-        naturalness_floor: Minimum target probability; ``0.0`` is a no-op.
-
-    Returns:
-        A renormalised ``[B, V]`` distribution. Rows where the floor masks every
-        token fall back to a one-hot on the most target-likely token, so
-        generation degrades to the plain target rather than failing.
+    The threshold is on target_probs, never on probs. A row where everything
+    is masked falls back to the most target-likely token.
     """
     if naturalness_floor <= 0.0:
         return probs
@@ -218,14 +168,7 @@ def apply_naturalness_floor(
 
 
 def top_alternatives(target_logits: Tensor, top_logprobs: int) -> tuple[Tensor, Tensor]:
-    """The ``k`` most likely tokens per row under the UNMODIFIED target.
-
-    Reported from the target rather than the tilted distribution deliberately:
-    the useful question is what the base model would have said here, alongside
-    what steering actually made it say.
-
-    Returns ``(token_ids, logprobs)``, each ``[B, k]``.
-    """
+    """The k most likely tokens per row under the unmodified target."""
     logprobs = target_logits - torch.logsumexp(target_logits, dim=-1, keepdim=True)
     k = min(int(top_logprobs), logprobs.shape[-1])
     values, indices = logprobs.topk(k, dim=-1)
@@ -242,29 +185,10 @@ def sample_next(
     top_p: float | None = None,
     top_logprobs: int | None = None,
 ) -> tuple[Tensor, Tensor, tuple[Tensor, Tensor] | None]:
-    """Draw one token per batch row under the LogitTilt rule.
+    """Draw one token per row under the LogitTilt rule.
 
-    Args:
-        target_logits: Unmodified target next-token logits ``[B, V]``. Always
-            supplied: it carries the plausibility measurement even when
-            ``target_strength`` is 0.
-        elicited_logits: Behaviour-conditioned next-token logits ``[B, V]``, or
-            ``None`` when ``steering_strength`` is 0 and that pass was skipped.
-        config: Strengths and naturalness floor.
-        temperature: Applied to the mixed logits only.
-        generator: Optional RNG, for reproducible sampling.
-        top_k: Keep only the k most likely tokens of the tilted distribution.
-        top_p: Keep the smallest set of tilted-distribution tokens whose mass
-            reaches ``top_p``.
-        top_logprobs: If set, also return that many alternative tokens per row,
-            taken from the unmodified target.
-
-    Returns:
-        ``(tokens, target_logprobs, alternatives)``. The second value is the
-        log-probability each sampled token had under the *unmodified* target --
-        the on-policy plausibility metric, free here because those logits were
-        computed for this step anyway. The third is ``None`` unless
-        ``top_logprobs`` was requested.
+    Returns (tokens, target_logprobs, alternatives). The logprobs are the
+    sampled tokens' probability under the UNMODIFIED target.
     """
     if temperature <= 0.0:
         raise ValueError(f"temperature must be > 0, got {temperature}")
@@ -295,40 +219,29 @@ _TILT_ARGS = (
     "steering_reminder",
     "steering_reminder_file",
     "prefill",
+    "prefill_file",
     "naturalness_floor",
 )
 
 
 def _as_text(name: str, value: Any) -> str:
-    """Coerce a model_arg to text.
+    """Coerce a model_arg to text, refusing values the CLI parser has mangled.
 
-    Inspect's ``-M`` parser turns a comma-containing value into a LIST, so a
-    prose prompt passed on the command line arrives split at its commas. Naively
-    calling str() on that yields a stringified Python list, which is non-empty
-    and therefore passes every validation while being complete nonsense as a
-    steering prompt. Rejoin instead, and point at the file form, which never has
-    this problem.
+    Inspect's -M parser splits comma-containing values into a list and
+    colon-containing ones into a dict. str() on those yields nonsense that still
+    passes every validation, so raise instead and point at the file form.
     """
-    if isinstance(value, dict):
-        # a colon in the value makes Inspect's parser build a dict
-        logger.warning(
-            "%s arrived as a dict because Inspect's -M parser split it on a colon. "
-            "Reassembling it, but prefer a file or the Python API for prose.",
-            name,
+    if isinstance(value, (list, tuple, dict)):
+        raise ValueError(  # noqa: TRY004 - a config error, not a type error
+            f"{name} was split by Inspect's -M parser because it contains a comma "
+            f"or a colon, and cannot be recovered reliably. Use {name}_file to read "
+            f"it from a file, or pass it from Python."
         )
-        return ", ".join(f"{k}: {v}" for k, v in value.items())
-    if isinstance(value, (list, tuple)):
-        logger.warning(
-            "%s arrived as a list because Inspect splits comma-containing -M values. "
-            "Rejoining it, but prefer steering_prompt_file for prose prompts.",
-            name,
-        )
-        return ", ".join(str(part) for part in value)
     return str(value)
 
 
 def _as_float(name: str, value: Any) -> float:
-    """Coerce a model_arg to float. CLI ``-M`` values always arrive as strings."""
+    """Coerce a model_arg to float. CLI -M values arrive as strings."""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -336,11 +249,7 @@ def _as_float(name: str, value: Any) -> float:
 
 
 def build_config(model_args: dict[str, Any]) -> tuple[TiltConfig, dict[str, Any]]:
-    """Split LogitTilt settings out of ``model_args`` and validate them.
-
-    Returns the config plus the remaining args, which the provider passes through
-    to the inherited HuggingFace provider untouched.
-    """
+    """Split LogitTilt settings out of model_args and validate them."""
     args = dict(model_args)
     taken = {name: args.pop(name) for name in _TILT_ARGS if name in args}
 
@@ -366,7 +275,7 @@ def build_config(model_args: dict[str, Any]) -> tuple[TiltConfig, dict[str, Any]
             "instruction that conditions the second distribution."
         )
 
-    prefill = taken.get("prefill")
+    prefill = resolve("prefill", "prefill_file")
     config = TiltConfig(
         steering_prompt=prompt,
         steering_reminder=reminder,
@@ -380,7 +289,7 @@ def build_config(model_args: dict[str, Any]) -> tuple[TiltConfig, dict[str, Any]
             if "target_strength" in taken
             else 1.0
         ),
-        prefill=_as_text("prefill", prefill) if prefill else None,
+        prefill=prefill,
         naturalness_floor=(
             _as_float("naturalness_floor", taken["naturalness_floor"])
             if "naturalness_floor" in taken

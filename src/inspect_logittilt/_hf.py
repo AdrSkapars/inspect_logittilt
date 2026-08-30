@@ -1,16 +1,9 @@
 """LogitTilt on top of Inspect's HuggingFace provider.
 
-``LogitTiltHFAPI`` subclasses ``HuggingFaceAPI`` rather than reimplementing it.
-Model loading, tokenizer setup and chat templating are all inherited; the only
-method we override is ``generate()``, because that is the only thing LogitTilt
-changes. The practical consequence for users is that ``hf-logittilt`` accepts
-every ``model_args`` that ``hf`` accepts -- ``device``, ``tokenizer_path``,
-``trust_remote_code``, and so on -- plus the LogitTilt ones.
-
-Note that ``inspect_ai.model._providers.hf`` is a private module. We depend on a
-deliberately small part of it (``__init__``, ``self.model``, ``self.tokenizer``,
-``hf_chat``); ``tests/test_provider.py`` exercises that surface so an upstream
-change breaks loudly in CI rather than silently for users.
+Subclasses HuggingFaceAPI and overrides only generate(), so model loading,
+tokenizer setup and chat templating are inherited -- and hf-logittilt
+accepts every model_arg hf/ does. inspect_ai.model._providers.hf is
+private, so tests/test_provider.py exercises the surface we depend on.
 """
 
 from __future__ import annotations
@@ -44,14 +37,11 @@ logger = logging.getLogger(__name__)
 
 
 def stop_token_ids(tokenizer: Any, model: Any) -> set[int]:
-    """Token ids that should end generation.
+    """Token ids that end a turn.
 
-    A chat model rarely emits the document EOS (``tokenizer.eos_token_id``); it
-    ends a turn with a turn marker instead -- ``<|im_end|>`` for Qwen,
-    ``<end_of_turn>`` for Gemma, ``<|end|>`` for Phi. ``generation_config`` often
-    lists several candidates and their order differs between model families, so
-    we cannot just take the first. Instead we render a complete assistant turn
-    and keep whichever candidates the chat template actually emits to close it.
+    A chat model rarely emits the document EOS; it uses a turn marker whose
+    position in generation_config differs by family. So render a closed
+    assistant turn and keep whichever candidates the template emits.
     """
     candidates: set[int] = set()
 
@@ -86,23 +76,14 @@ def stop_token_ids(tokenizer: Any, model: Any) -> set[int]:
 def positions_from_mask(attention_mask: torch.Tensor) -> torch.Tensor:
     """Position ids for a LEFT-padded batch.
 
-    A raw ``model(...)`` call does not derive positions from the mask -- only
-    ``generate()``'s input preparation does that. Left padding shifts real tokens
-    to later absolute positions, so without explicit position ids a padded row
-    silently gets different positions, and therefore different logits, from the
-    same text unpadded. Pad slots are clamped to 0; they are masked out anyway.
+    A raw model() call does not derive these from the mask, so without them a
+    padded row silently gets different logits from the same text unpadded.
     """
     return (attention_mask.cumsum(-1) - 1).clamp(min=0)
 
 
 def truncate_at_stop(completion: str, stop_seqs: list[str] | None) -> str:
-    """Cut the completion at the earliest stop sequence, excluding it.
-
-    Decoding stops a row as soon as a stop sequence appears in its tail, but the
-    token that completed the match usually carries trailing text as well, so the
-    string still has to be trimmed. Excluding the sequence itself matches what
-    every other provider returns.
-    """
+    """Cut the completion at the earliest stop sequence, excluding it."""
     if not stop_seqs:
         return completion
     cut = min(
@@ -113,12 +94,7 @@ def truncate_at_stop(completion: str, stop_seqs: list[str] | None) -> str:
 
 
 def token_probability_summary(target_logprobs: list[float]) -> dict[str, float | int]:
-    """On-policy plausibility of a completion, as percentages.
-
-    These come free from the target logits already computed at each step, and are
-    the metrics the method is tuned against: how probable the *unmodified* model
-    considers the text that steering produced.
-    """
+    """On-policy plausibility of a completion, as percentages."""
     if not target_logprobs:
         return {"tokens": 0}
     probs = [math.exp(lp) for lp in target_logprobs]
@@ -131,9 +107,7 @@ def token_probability_summary(target_logprobs: list[float]) -> dict[str, float |
 
 
 DEFAULT_BATCH_SIZE = 8
-# how long to keep collecting arrivals after the first one. Inspect fires its
-# samples off together, so a few milliseconds is enough to catch the burst, and
-# it is nothing against a multi-second generation.
+# long enough to catch the burst Inspect fires off together
 BATCH_LINGER_SECONDS = 0.01
 
 
@@ -150,23 +124,20 @@ class _PendingRequest:
     seed: int | None
     stop_seqs: list[str] | None
     top_logprobs: int | None
-    # snapshot, not a reference to self.tilt: the provider's config can be
-    # mutated between queueing and decoding, and reporting settings that were
-    # not the ones actually used is worse than not reporting them.
+    # a snapshot: self.tilt can change between queueing and decoding
     tilt: TiltConfig
     future: asyncio.Future = field(repr=False)
 
 
 class LogitTiltHFAPI(HuggingFaceAPI):
-    """HuggingFace target model whose decoding is steered toward a named behaviour."""
+    """HuggingFace target model whose decoding is steered toward a behaviour."""
 
     def __init__(
         self,
         model_name: str,
         base_url: str | None = None,
         api_key: str | None = None,
-        # signature mirrors HuggingFaceAPI/ModelAPI exactly; Inspect constructs
-        # providers positionally, so it must not diverge.
+        # mirrors HuggingFaceAPI: Inspect constructs providers positionally
         config: GenerateConfig = GenerateConfig(),  # noqa: B008
         **model_args: Any,
     ) -> None:
@@ -187,19 +158,10 @@ class LogitTiltHFAPI(HuggingFaceAPI):
     def _elicited_messages(self, input: list[ChatMessage]) -> list[ChatMessage]:
         """Conversation with the steering instruction attached.
 
-        ``steering_prompt`` goes at the START, as a system message. If the
-        conversation already opens with one -- which many tasks do, to carry
-        few-shot examples or format rules -- it is merged into that rather than
-        prepended as a second, because several chat templates (Qwen's among them)
-        raise "System message must be at the beginning" for a system message that
-        is not first.
-
-        ``steering_reminder`` goes at the END, appended to the FINAL user
-        message. Last rather than first: the point of it is to sit next to where
-        generation begins, and in a multi-turn conversation the first user
-        message is no closer than the system prompt. Because the elicited context
-        is rebuilt from the real transcript on every call, the reminder re-lands
-        adjacent to generation each turn without accumulating.
+        The prompt goes at the start as a system message, merged into an existing
+        one if present -- several templates reject a system message that is not
+        first. The reminder goes on the last user message, next to where
+        generation begins.
         """
         messages = list(input)
 
@@ -225,11 +187,8 @@ class LogitTiltHFAPI(HuggingFaceAPI):
     def _append_reminder(messages: list[ChatMessage], reminder: str) -> list[ChatMessage]:
         """Append the reminder to the last user message.
 
-        If the conversation has no user message at all -- or ends with tool
-        results several messages after the last user turn, as an agentic loop
-        can -- we fall back to a trailing user message. That keeps the reminder
-        adjacent to generation, which is the whole point, though we have no
-        measurement of how well it works in the tool case.
+        Falls back to a trailing user message when there is none, which an agentic
+        loop can produce. That case is unmeasured.
         """
         messages = list(messages)
         for i in range(len(messages) - 1, -1, -1):
@@ -240,13 +199,7 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         return [*messages, ChatMessageUser(content=reminder)]
 
     def _elicited_messages_via_user(self, input: list[ChatMessage]) -> list[ChatMessage]:
-        """Fallback when a chat template will not carry a system message.
-
-        Every chat template supports a user turn; not all support a system one,
-        and some silently drop system content instead of raising. The steering
-        prompt is prepended to the first user message; any reminder is still
-        appended to the last, as usual.
-        """
+        """Fallback for templates that will not carry a system message."""
         separator = "\n\n"
         messages = list(input)
         prompt = self.tilt.steering_prompt
@@ -266,17 +219,8 @@ class LogitTiltHFAPI(HuggingFaceAPI):
     def _contexts(self, input: list[ChatMessage], tools: list[ToolInfo]) -> tuple[str, str]:
         """Render the two prompts the tilt runs over.
 
-        The target context is the conversation as it stands. The elicited context
-        is the same conversation plus the steering instruction. Both go through
-        the inherited ``hf_chat()``, so they use the model's real chat template
-        rather than anything we invent.
-
-        The instruction is attached as a system message by default, matching the
-        paper. Some chat templates do not support a system role and drop it
-        silently, which would turn steering into a no-op without any error, so we
-        check that the instruction survives rendering and fall back to the first
-        user message if it did not. The check is behavioural: no model-name
-        special cases.
+        Checks the instruction survived templating: some templates drop system
+        content silently, which would make steering a no-op that still looks fine.
         """
         target = self.hf_chat(input, tools)
 
@@ -296,9 +240,7 @@ class LogitTiltHFAPI(HuggingFaceAPI):
                 )
 
         if self.tilt.prefill:
-            # hf_chat ends with the generation prompt, so the prefill lands exactly
-            # where the assistant's reply begins. It shapes the elicited
-            # distribution only and never enters the returned completion.
+            # lands where the reply begins; elicited context only
             elicited = elicited + self.tilt.prefill
         return target, elicited
 
@@ -307,11 +249,8 @@ class LogitTiltHFAPI(HuggingFaceAPI):
     # ------------------------------------------------------------------
 
     def _encode_left_padded(self, texts: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
-        """Tokenise a batch with LEFT padding.
-
-        Left rather than right because generation continues from the final
-        position: with right padding the last token of a short row would be pad,
-        and its next-token distribution meaningless.
+        """Tokenise a batch with LEFT padding, since generation continues from the
+        final position.
         """
         original_side = self.tokenizer.padding_side
         try:
@@ -336,33 +275,18 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         stop_seqs: list[str] | None = None,
         top_logprobs: int | None = None,
     ) -> list[tuple[list[int], list[float], list[list[tuple[int, float]]]]]:
-        """Step both contexts in lockstep for a batch of requests.
+        """Step both contexts in lockstep for a batch.
 
-        Two KV caches advance together over the *same* sampled tokens: whatever is
-        drawn is appended to both the target and the elicited context, so the two
-        distributions stay conditioned on an identical continuation and differ
-        only in their prefix.
-
-        Rows are independent -- each stops at its own stop token -- but they share
-        the forward passes, which is where the speedup comes from. A finished row
-        keeps being fed pad tokens so shapes stay rectangular; its outputs are
-        discarded.
+        Two KV caches advance over the same sampled tokens, so the distributions
+        differ only in their prefix. Rows stop independently; finished ones are
+        fed pad to keep the batch rectangular.
         """
         if len(target_texts) != len(elicited_texts) or len(target_texts) != len(max_tokens):
             raise ValueError("target, elicited and max_tokens batches must be the same length")
         batch_size = len(target_texts)
 
-        # The target stream is always generated. It has three consumers -- the
-        # mixture, the naturalness floor (which thresholds on the TRUE target
-        # distribution) and the reported on-policy probability -- and the last of
-        # those applies to every run, so skipping it at target_strength=0 would
-        # silently drop the plausibility metric. Where the stream is needed
-        # anyway, capturing logprobs during decoding is free: the logits were
-        # computed for the mixture regardless. (If prompted-only ever becomes a
-        # long-running workflow rather than a diagnostic, the cheaper answer is
-        # one teacher-forced scoring pass at the end -- one parallel forward
-        # instead of T sequential steps -- with batch-chunking to keep the
-        # [B, T, V] logits in memory.)
+        # always generated: it carries the floor threshold and the reported
+        # probability, not just the mixture
         need_target = True
         need_elicited = tilt.steering_strength != 0.0
 
@@ -395,17 +319,13 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         reference = target_logits if target_logits is not None else elicited_logits
         device = reference.device
 
-        # A seeded generator makes a decode reproducible for a fixed batch. Batch
-        # composition itself depends on arrival timing, so identical eval runs can
-        # still group requests differently -- documented rather than pretended away.
+        # reproducible for a fixed batch; composition still varies with timing
         generator = None
         if seed is not None:
             generator = torch.Generator(device=device)
             generator.manual_seed(int(seed))
 
-        # how far back to look for a stop sequence: enough tokens to contain the
-        # longest one, decoded fresh each step rather than accumulated, so token
-        # boundaries cannot split a match
+        # decoded fresh each step so token boundaries cannot split a match
         stop_window = 0
         if stop_seqs:
             stop_window = max(8, max(len(s) for s in stop_seqs))
@@ -457,7 +377,7 @@ class LogitTiltHFAPI(HuggingFaceAPI):
             if bool(done.all()):
                 break
 
-            # finished rows are fed pad so the batch stays rectangular
+            # finished rows are fed pad to keep the batch rectangular
             next_input = torch.where(done, torch.full_like(sampled, pad_id), sampled)
             next_input = next_input.unsqueeze(-1)
 
@@ -503,10 +423,8 @@ class LogitTiltHFAPI(HuggingFaceAPI):
     async def _submit(self, request: _PendingRequest) -> tuple[list[int], list[float]]:
         """Queue a request and wait for the batch it lands in.
 
-        An asyncio.Queue binds to the loop that first used it, so the queue and
-        its batcher are rebuilt whenever we find ourselves on a different loop --
-        otherwise a second asyncio.run() would fail with "bound to a different
-        event loop". The provider outlives any single loop; the queue must not.
+        An asyncio.Queue binds to its creating loop, so both are rebuilt when the
+        loop changes.
         """
         loop = asyncio.get_running_loop()
         if getattr(self, "_loop", None) is not loop:
@@ -533,10 +451,7 @@ class LogitTiltHFAPI(HuggingFaceAPI):
                 except asyncio.QueueEmpty:
                     break
 
-            # A batch shares one sampling rule, so it must be homogeneous in
-            # everything that defines it -- temperature, tilt config and the
-            # sampling options. Anything else goes back on the queue. In practice
-            # an eval uses one setting throughout, so this rarely splits.
+            # a batch shares one sampling rule; the rest goes back on the queue
             def rule(request: _PendingRequest) -> tuple:
                 return (
                     request.temperature,
@@ -592,14 +507,11 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         target_logprobs: list[float],
         alternatives: list[list[tuple[int, float]]],
     ) -> Logprobs:
-        """Per-token logprobs, taken from the UNMODIFIED target distribution.
+        """Per-token logprobs from the UNMODIFIED target.
 
-        A semantic difference from ``hf/`` worth knowing: upstream reports the
-        distribution it sampled from, whereas the tokens here were chosen under
-        the tilt while the probabilities describe what the base model thought of
-        them. That is the more useful pairing for this method -- how plausible
-        the unsteered model finds the steered text -- but it is not the same
-        number ``hf/`` would return.
+        Upstream reports the distribution it sampled from; the tokens here were
+        chosen under the tilt while the probabilities describe what the base model
+        thought of them.
         """
         content: list[Logprob] = []
         for i, (token_id, logprob) in enumerate(zip(tokens, target_logprobs, strict=False)):
@@ -634,7 +546,6 @@ class LogitTiltHFAPI(HuggingFaceAPI):
 
         tilt = self.tilt
         stop_seqs = list(config.stop_seqs) if config.stop_seqs else None
-        # config.logprobs asks for them at all; top_logprobs asks for alternatives
         wants_logprobs = bool(config.logprobs)
         top_logprobs = config.top_logprobs if wants_logprobs else None
         tokens, target_logprobs, alternatives = await self._submit(
@@ -655,11 +566,8 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         completion = self.tokenizer.decode(tokens, skip_special_tokens=True)
         completion = truncate_at_stop(completion, stop_seqs)
 
-        # Tool definitions already reach both prompts through the inherited
-        # hf_chat(), which renders them with the model's own template. All that
-        # is left is parsing any call back out of the text we generated, and the
-        # upstream handler does exactly that -- it works on the completion
-        # string, so owning the decode loop costs us nothing here.
+        # hf_chat already put the tools in both prompts; the upstream handler
+        # parses any call back out of the completion
         handler: ChatAPIHandler | None = (
             HFHandler(self.model_name, self.model_family()) if tools else None
         )
