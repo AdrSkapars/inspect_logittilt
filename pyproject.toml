@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "inspect-logittilt"
+version = "0.1.0"
+description = "LogitTilt behaviour elicitation as an Inspect AI model provider."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Adrians Skapars" }]
+keywords = ["inspect", "ai-safety", "auditing", "red-teaming", "elicitation"]
+dependencies = [
+    "inspect-ai>=0.3.0",
+    "torch",
+    "transformers",
+    "accelerate",  # transformers requires it for the device_map path inspect's hf provider uses
+]
+
+# Inspect discovers extensions through this entry point: on startup it imports the
+# named module and whatever that module registers becomes available. No PR against
+# inspect_ai is required. See https://inspect.aisi.org.uk/extensions.html
+[project.entry-points.inspect_ai]
+inspect_logittilt = "inspect_logittilt._registry"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/inspect_logittilt"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
