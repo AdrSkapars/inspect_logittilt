@@ -101,13 +101,42 @@ def test_prefill_lands_only_on_the_elicited_context(api, monkeypatch):
 # --------------------------------------------------------------------------
 
 
-def test_tools_raise_rather_than_being_silently_dropped(api):
+def test_tools_are_accepted_and_reach_both_contexts(api):
+    """Tool definitions go into both prompts via the inherited hf_chat(), so the
+    elicited distribution sees the same tools the target does."""
+    from inspect_ai.model import ChatMessageUser
+    from inspect_ai.tool import ToolInfo
+
+    if not api.tokenizer.chat_template:
+        pytest.skip("tiny test model has no chat template, so tools cannot be rendered")
+
+    tool = ToolInfo(name="add_numbers", description="adds two numbers")
+    target, elicited = api._contexts([ChatMessageUser(content="hi")], [tool])
+    assert "add_numbers" in target
+    assert "add_numbers" in elicited
+
+
+def test_generating_with_tools_returns_an_assistant_message(api):
+    """Parsing tool calls back out of the completion is the upstream handler's
+    job; owning the decode loop does not prevent reusing it."""
     from inspect_ai.model import ChatMessageUser, GenerateConfig
     from inspect_ai.tool import ToolInfo
 
-    tool = ToolInfo(name="calc", description="adds")
-    with pytest.raises(NotImplementedError, match="tool calling"):
-        asyncio.run(api.generate([ChatMessageUser(content="hi")], [tool], "auto", GenerateConfig()))
+    tool = ToolInfo(name="add_numbers", description="adds two numbers")
+    output = asyncio.run(
+        api.generate(
+            [ChatMessageUser(content="add 2 and 3")],
+            [tool],
+            "auto",
+            GenerateConfig(max_tokens=6),
+        )
+    )
+    assert output.choices
+    message = output.choices[0].message
+    assert message.role == "assistant"
+    # tool_calls is None or a list depending on what the model emitted; either is
+    # a valid parse. What matters is that it did not raise.
+    assert message.tool_calls is None or isinstance(message.tool_calls, list)
 
 
 def test_generate_returns_a_completion_with_plausibility_metadata(api):

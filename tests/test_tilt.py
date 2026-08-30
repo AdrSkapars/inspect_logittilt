@@ -200,3 +200,23 @@ def test_build_config_rejects_a_missing_prompt_file(tmp_path):
 def test_build_config_rejects_unparseable_numbers():
     with pytest.raises(ValueError, match="steering_strength must be a number"):
         build_config({"steering_strength": "high", "steering_prompt": "x"})
+
+
+def test_a_comma_split_prompt_is_rejoined_not_stringified():
+    """Inspect's -M parser splits comma-containing values into a list. Calling
+    str() on that gives a stringified Python list: non-empty, so it passes every
+    validation, while being nonsense as a steering prompt. This silently ruined
+    every CLI run whose prompt contained a comma."""
+    config, _ = build_config(
+        {
+            "steering_prompt": ["You are obsessed with goblins", " and mention them constantly."],
+            "steering_strength": "3",
+        }
+    )
+    assert config.steering_prompt == "You are obsessed with goblins,  and mention them constantly."
+    assert "[" not in config.steering_prompt
+
+
+def test_a_comma_split_prefill_is_rejoined_too():
+    config, _ = build_config({"steering_prompt": "x", "prefill": ["In that voice", " softly:"]})
+    assert config.prefill == "In that voice,  softly:"

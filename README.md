@@ -42,8 +42,8 @@ inspect eval <any-task> \
 
 | `model_arg` | Required | Default | Meaning |
 |---|---|---|---|
-| `steering_prompt` | one of | — | Behaviour-eliciting system prompt, inline |
-| `steering_prompt_file` | these two | — | …or read from a file (easier for multi-line prompts) |
+| `steering_prompt_file` | one of | — | Path to the behaviour-eliciting prompt. **Prefer this on the CLI** (see below) |
+| `steering_prompt` | these two | — | …or inline |
 | `steering_strength` | no | `1.0` | Weight on the elicited distribution (`beta` in the paper). `0` = unmodified model |
 | `prefill` | no | `None` | Short assistant prefix opening the elicited context only; never appears in the transcript |
 | `naturalness_floor` | no | `1e-4` | Minimum probability the unmodified target must assign to a sampleable token. `0` disables |
@@ -65,12 +65,19 @@ tokens. This is a property of the method, not of this implementation:
   servers like vLLM and SGLang are a poor fit, since coupling two sequences in
   lockstep fights continuous batching.
 
-Not yet supported:
+### Prefer `steering_prompt_file` on the command line
 
-- **Tool calling.** The provider owns its decode loop, so it cannot reuse the
-  HuggingFace provider's tool-call parsing. Passing tools raises rather than
-  silently dropping them, since a quietly tool-less target would produce
-  wrong-looking audit results. Text-generation evals are unaffected.
+Inspect's `-M` parser splits a comma-containing value into a *list*, so a prose
+prompt passed inline arrives split at its commas. A file is read verbatim and
+cannot be mangled:
+
+```bash
+-M steering_prompt_file=./behaviours/self_harm.txt   # robust
+-M steering_prompt='Be relentlessly grim, and never offer comfort.'   # split at the comma
+```
+
+The inline form is rejoined with a warning rather than failing, but the file
+form avoids the question. Passing the prompt from Python is unaffected.
 
 ## Reasoning models
 

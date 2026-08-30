@@ -25,6 +25,7 @@ pinned by tests:
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,8 @@ from typing import Any
 
 import torch
 from torch import Tensor
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -176,6 +179,26 @@ _TILT_ARGS = (
 )
 
 
+def _as_text(name: str, value: Any) -> str:
+    """Coerce a model_arg to text.
+
+    Inspect's ``-M`` parser turns a comma-containing value into a LIST, so a
+    prose prompt passed on the command line arrives split at its commas. Naively
+    calling str() on that yields a stringified Python list, which is non-empty
+    and therefore passes every validation while being complete nonsense as a
+    steering prompt. Rejoin instead, and point at the file form, which never has
+    this problem.
+    """
+    if isinstance(value, (list, tuple)):
+        logger.warning(
+            "%s arrived as a list because Inspect splits comma-containing -M values. "
+            "Rejoining it, but prefer steering_prompt_file for prose prompts.",
+            name,
+        )
+        return ", ".join(str(part) for part in value)
+    return str(value)
+
+
 def _as_float(name: str, value: Any) -> float:
     """Coerce a model_arg to float. CLI ``-M`` values always arrive as strings."""
     try:
@@ -198,7 +221,7 @@ def build_config(model_args: dict[str, Any]) -> tuple[TiltConfig, dict[str, Any]
     if prompt and prompt_file:
         raise ValueError("pass steering_prompt or steering_prompt_file, not both")
     if prompt_file:
-        path = Path(str(prompt_file))
+        path = Path(_as_text("steering_prompt_file", prompt_file))
         if not path.is_file():
             raise ValueError(f"steering_prompt_file not found: {path}")
         prompt = path.read_text(encoding="utf-8").strip()
@@ -210,13 +233,13 @@ def build_config(model_args: dict[str, Any]) -> tuple[TiltConfig, dict[str, Any]
 
     prefill = taken.get("prefill")
     config = TiltConfig(
-        steering_prompt=str(prompt),
+        steering_prompt=_as_text("steering_prompt", prompt),
         steering_strength=(
             _as_float("steering_strength", taken["steering_strength"])
             if "steering_strength" in taken
             else 1.0
         ),
-        prefill=str(prefill) if prefill else None,
+        prefill=_as_text("prefill", prefill) if prefill else None,
         naturalness_floor=(
             _as_float("naturalness_floor", taken["naturalness_floor"])
             if "naturalness_floor" in taken

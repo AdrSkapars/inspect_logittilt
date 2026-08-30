@@ -23,13 +23,16 @@ from typing import Any
 
 import torch
 from inspect_ai.model import (
+    ChatCompletionChoice,
     ChatMessage,
+    ChatMessageAssistant,
     ChatMessageSystem,
     ChatMessageUser,
     GenerateConfig,
     ModelOutput,
 )
 from inspect_ai.model._providers.hf import HuggingFaceAPI
+from inspect_ai.model._providers.util import ChatAPIHandler, HFHandler
 from inspect_ai.tool import ToolChoice, ToolInfo
 
 from ._tilt import TiltConfig, build_config, sample_next
@@ -418,14 +421,6 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         tool_choice: ToolChoice,
         config: GenerateConfig,
     ) -> ModelOutput:
-        if tools:
-            raise NotImplementedError(
-                "hf-logittilt does not support tool calling yet: it owns the decode "
-                "loop, so it cannot reuse the HuggingFace provider's tool-call "
-                "parsing. Use a task without tools, or hf/ if you need them. "
-                "Silently dropping the tools would produce quietly wrong results."
-            )
-
         target_text, elicited_text = self._contexts(input, tools)
         max_tokens = config.max_tokens or self.max_tokens() or 512
         temperature = config.temperature if config.temperature is not None else 1.0
@@ -443,7 +438,21 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         )
         completion = self.tokenizer.decode(tokens, skip_special_tokens=True)
 
-        output = ModelOutput.from_content(model=self.model_name, content=completion)
+        # Tool definitions already reach both prompts through the inherited
+        # hf_chat(), which renders them with the model's own template. All that
+        # is left is parsing any call back out of the text we generated, and the
+        # upstream handler does exactly that -- it works on the completion
+        # string, so owning the decode loop costs us nothing here.
+        handler: ChatAPIHandler | None = (
+            HFHandler(self.model_name, self.model_family()) if tools else None
+        )
+        message: ChatMessageAssistant = (
+            handler.parse_assistant_response(completion, tools)
+            if handler
+            else ChatMessageAssistant(content=completion, model=self.model_name, source="generate")
+        )
+
+        output = ModelOutput(model=self.model_name, choices=[ChatCompletionChoice(message=message)])
         output.metadata = {
             "logittilt": {
                 "steering_strength": tilt.steering_strength,
