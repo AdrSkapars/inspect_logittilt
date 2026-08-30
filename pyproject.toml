@@ -11,21 +11,40 @@ requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Adrians Skapars" }]
 keywords = ["inspect", "ai-safety", "auditing", "red-teaming", "elicitation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "inspect-ai>=0.3.0",
     "torch",
     "transformers",
-    "accelerate",  # transformers requires it for the device_map path inspect's hf provider uses
+    "accelerate",  # transformers needs it for the device_map path inspect's hf provider uses
 ]
 
-# Inspect discovers extensions through this entry point: on startup it imports the
-# named module and whatever that module registers becomes available. No PR against
-# inspect_ai is required. See https://inspect.aisi.org.uk/extensions.html
+[project.urls]
+Homepage = "https://github.com/AdrSkapars/inspect_logittilt"
+Repository = "https://github.com/AdrSkapars/inspect_logittilt"
+Issues = "https://github.com/AdrSkapars/inspect_logittilt/issues"
+Changelog = "https://github.com/AdrSkapars/inspect_logittilt/blob/main/CHANGELOG.md"
+
+# Inspect imports this on startup and picks up whatever it registers.
+# https://inspect.aisi.org.uk/extensions.html
 [project.entry-points.inspect_ai]
 inspect_logittilt = "inspect_logittilt._registry"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/inspect_logittilt"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "LICENSE", "CHANGELOG.md"]
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff"]

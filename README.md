@@ -1,4 +1,4 @@
-# inspect-logittilt
+# Inspect LogitTilt
 
 LogitTilt behaviour elicitation as an [Inspect](https://inspect.aisi.org.uk) model provider.
 
