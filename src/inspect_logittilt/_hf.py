@@ -160,7 +160,21 @@ class LogitTiltHFAPI(HuggingFaceAPI):
     # ------------------------------------------------------------------
 
     def _elicited_messages(self, input: list[ChatMessage]) -> list[ChatMessage]:
-        """Conversation with the steering instruction attached, as a system message."""
+        """Conversation with the steering instruction attached, as a system message.
+
+        If the conversation already opens with a system message -- which many
+        tasks do, e.g. to carry few-shot examples -- the instruction is merged
+        into it rather than prepended as a second one. Several chat templates
+        (Qwen's among them) raise "System message must be at the beginning" when
+        a system message appears anywhere but first, so adding one is not safe.
+        """
+        head = input[0] if input else None
+        if head is not None and head.role == "system" and isinstance(head.content, str):
+            separator = "\n\n"
+            merged = ChatMessageSystem(
+                content=f"{self.tilt.steering_prompt}{separator}{head.content}"
+            )
+            return [merged, *input[1:]]
         return [ChatMessageSystem(content=self.tilt.steering_prompt), *input]
 
     def _elicited_messages_via_user(self, input: list[ChatMessage]) -> list[ChatMessage]:

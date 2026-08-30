@@ -189,6 +189,14 @@ def _as_text(name: str, value: Any) -> str:
     steering prompt. Rejoin instead, and point at the file form, which never has
     this problem.
     """
+    if isinstance(value, dict):
+        # a colon in the value makes Inspect's parser build a dict
+        logger.warning(
+            "%s arrived as a dict because Inspect's -M parser split it on a colon. "
+            "Reassembling it, but prefer a file or the Python API for prose.",
+            name,
+        )
+        return ", ".join(f"{k}: {v}" for k, v in value.items())
     if isinstance(value, (list, tuple)):
         logger.warning(
             "%s arrived as a list because Inspect splits comma-containing -M values. "

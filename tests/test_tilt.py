@@ -220,3 +220,11 @@ def test_a_comma_split_prompt_is_rejoined_not_stringified():
 def test_a_comma_split_prefill_is_rejoined_too():
     config, _ = build_config({"steering_prompt": "x", "prefill": ["In that voice", " softly:"]})
     assert config.prefill == "In that voice,  softly:"
+
+
+def test_a_colon_split_prompt_is_reassembled():
+    """A colon makes Inspect's -M parser build a dict, which str() would turn
+    into a stringified dict: non-empty, so it passes validation as nonsense."""
+    config, _ = build_config({"steering_prompt": {"Reasoning": "be goblin-minded."}})
+    assert config.steering_prompt == "Reasoning: be goblin-minded."
+    assert "{" not in config.steering_prompt

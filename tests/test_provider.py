@@ -355,3 +355,30 @@ def test_reported_settings_are_the_ones_actually_used(api):
         assert meta["naturalness_floor"] == original.naturalness_floor
     finally:
         api.tilt = original
+
+
+def test_steering_merges_into_an_existing_system_message(api):
+    """Many tasks open with a system message (few-shot blocks, format rules) and
+    several chat templates reject a system message that is not first. Adding a
+    second one made every gsm8k run fail with "System message must be at the
+    beginning" -- and the failure was invisible until the log status was checked."""
+    from inspect_ai.model import ChatMessageSystem, ChatMessageUser
+
+    conversation = [
+        ChatMessageSystem(content="Answer in the format ANSWER: x"),
+        ChatMessageUser(content="what is 2+2"),
+    ]
+    messages = api._elicited_messages(conversation)
+
+    assert sum(1 for m in messages if m.role == "system") == 1
+    assert messages[0].role == "system"
+    assert api.tilt.steering_prompt in messages[0].text
+    assert "Answer in the format ANSWER: x" in messages[0].text
+
+
+def test_steering_still_prepends_when_there_is_no_system_message(api):
+    from inspect_ai.model import ChatMessageUser
+
+    messages = api._elicited_messages([ChatMessageUser(content="hi")])
+    assert messages[0].role == "system"
+    assert messages[0].text == api.tilt.steering_prompt
