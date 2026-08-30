@@ -16,24 +16,6 @@ import pytest
 
 from inspect_logittilt._hf import token_probability_summary
 
-TINY_MODEL = "hf-internal-testing/tiny-random-gpt2"
-
-
-@pytest.fixture(scope="module")
-def api():
-    from inspect_ai.model import GenerateConfig
-
-    from inspect_logittilt._hf import LogitTiltHFAPI
-
-    return LogitTiltHFAPI(
-        TINY_MODEL,
-        steering_prompt="you are a cruel inner voice",
-        steering_strength="1.5",
-        device="cpu",
-        config=GenerateConfig(max_tokens=8),
-    )
-
-
 # --------------------------------------------------------------------------
 # pure helpers
 # --------------------------------------------------------------------------
@@ -106,9 +88,6 @@ def test_tools_are_accepted_and_reach_both_contexts(api):
     elicited distribution sees the same tools the target does."""
     from inspect_ai.model import ChatMessageUser
     from inspect_ai.tool import ToolInfo
-
-    if not api.tokenizer.chat_template:
-        pytest.skip("tiny test model has no chat template, so tools cannot be rendered")
 
     tool = ToolInfo(name="add_numbers", description="adds two numbers")
     target, elicited = api._contexts([ChatMessageUser(content="hi")], [tool])
@@ -361,7 +340,8 @@ def test_steering_merges_into_an_existing_system_message(api):
     """Many tasks open with a system message (few-shot blocks, format rules) and
     several chat templates reject a system message that is not first. Adding a
     second one made every gsm8k run fail with "System message must be at the
-    beginning" -- and the failure was invisible until the log status was checked."""
+    beginning", invisibly until the log status was checked. The fixture template
+    now enforces the same rule, so this is covered without a real model."""
     from inspect_ai.model import ChatMessageSystem, ChatMessageUser
 
     conversation = [

@@ -91,6 +91,20 @@ give it room, or turn the trace off:
 -M enable_thinking=false
 ```
 
+## Steering is weaker inside a heavily-prompted task
+
+LogitTilt works on the *difference* between two distributions. When the
+conversation already carries a large shared context -- few-shot examples, a long
+format spec -- that context conditions the target and the elicited prompt
+equally, the two distributions converge, and the tilt has less to act on
+regardless of `steering_strength`.
+
+Measured on Qwen3.5-4B with the same steering prompt: a bare mundane question
+gives goblins in 7-8 of 8 samples at `steering_strength=3`, while the same
+prompt inside `inspect_evals/gsm8k` -- whose system message is ~5,900 characters
+of worked examples -- gives 0 of 10. Both runs completed successfully; this is a
+property of the method, not a failure.
+
 ## Batching
 
 Concurrent `generate()` calls are grouped into a single set of forward passes.
