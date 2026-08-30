@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import re
+from dataclasses import replace
 
 from inspect_ai.model import GenerateConfig, get_model
 
@@ -54,32 +55,38 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    strengths = [s.strip() for s in args.strengths.split(",")]
-    print(f"model={args.model}  floor={args.floor}  max_tokens={args.max_tokens}\n")
+    strengths = [float(s) for s in args.strengths.split(",")]
+    print(f"model={args.model}  floor={args.floor}  max_tokens={args.max_tokens}")
+
+    # Load the weights ONCE. steering_strength lives on the config object, so we
+    # vary it in place rather than constructing a provider per strength -- that
+    # would hold one full copy of the model per setting.
+    model = get_model(
+        f"hf-logittilt/{args.model}",
+        steering_prompt=GOBLIN_PROMPT,
+        naturalness_floor=args.floor,
+        device="cuda",
+        config=GenerateConfig(max_tokens=args.max_tokens, seed=args.seed),
+    )
 
     for question in QUESTIONS:
         print("=" * 100)
         print(f"USER: {question}")
-        print("=" * 100)
+        print("=" * 100, flush=True)
         for strength in strengths:
-            model = get_model(
-                f"hf-logittilt/{args.model}",
-                steering_prompt=GOBLIN_PROMPT,
-                steering_strength=strength,
-                naturalness_floor=args.floor,
-                device="cuda",
-                config=GenerateConfig(max_tokens=args.max_tokens, seed=args.seed),
-            )
+            model.api.tilt = replace(model.api.tilt, steering_strength=strength)
             output = asyncio.run(model.generate(question))
             meta = output.metadata["logittilt"]
             hits = len(CREATURES.findall(output.completion))
-            print(
-                f"\n--- strength={strength:<5} goblin_mentions={hits:<3} "
+            summary = (
+                f"strength={strength:<5} goblin_mentions={hits:<3} "
                 f"arith_prob={meta.get('arithmetic_mean_token_prob', 0):.1f}%  "
                 f"geo_prob={meta.get('geometric_mean_token_prob', 0):.1f}%  "
                 f"tokens={meta['tokens']}"
             )
-            print(output.completion.strip()[:600])
+            print()
+            print("--- " + summary)
+            print(output.completion.strip()[:600], flush=True)
         print()
 
 
