@@ -276,26 +276,48 @@ class LogitTiltHFAPI(HuggingFaceAPI):
             raise ValueError("target, elicited and max_tokens batches must be the same length")
         batch_size = len(target_texts)
 
-        target_ids, target_mask = self._encode_left_padded(target_texts)
-        elicited_ids, elicited_mask = self._encode_left_padded(elicited_texts)
+        # The target stream is always generated. It has three consumers -- the
+        # mixture, the naturalness floor (which thresholds on the TRUE target
+        # distribution) and the reported on-policy probability -- and the last of
+        # those applies to every run, so skipping it at target_strength=0 would
+        # silently drop the plausibility metric. Where the stream is needed
+        # anyway, capturing logprobs during decoding is free: the logits were
+        # computed for the mixture regardless. (If prompted-only ever becomes a
+        # long-running workflow rather than a diagnostic, the cheaper answer is
+        # one teacher-forced scoring pass at the end -- one parallel forward
+        # instead of T sequential steps -- with batch-chunking to keep the
+        # [B, T, V] logits in memory.)
+        need_target = True
+        need_elicited = tilt.steering_strength != 0.0
 
-        target_out = self.model(
-            input_ids=target_ids,
-            attention_mask=target_mask,
-            position_ids=positions_from_mask(target_mask),
-            use_cache=True,
-        )
-        elicited_out = self.model(
-            input_ids=elicited_ids,
-            attention_mask=elicited_mask,
-            position_ids=positions_from_mask(elicited_mask),
-            use_cache=True,
-        )
-        target_past, elicited_past = target_out.past_key_values, elicited_out.past_key_values
-        target_logits = target_out.logits[:, -1, :].float()
-        elicited_logits = elicited_out.logits[:, -1, :].float()
+        target_past = elicited_past = None
+        target_mask = elicited_mask = None
+        target_logits = elicited_logits = None
 
-        device = target_logits.device
+        if need_target:
+            target_ids, target_mask = self._encode_left_padded(target_texts)
+            target_out = self.model(
+                input_ids=target_ids,
+                attention_mask=target_mask,
+                position_ids=positions_from_mask(target_mask),
+                use_cache=True,
+            )
+            target_past = target_out.past_key_values
+            target_logits = target_out.logits[:, -1, :].float()
+
+        if need_elicited:
+            elicited_ids, elicited_mask = self._encode_left_padded(elicited_texts)
+            elicited_out = self.model(
+                input_ids=elicited_ids,
+                attention_mask=elicited_mask,
+                position_ids=positions_from_mask(elicited_mask),
+                use_cache=True,
+            )
+            elicited_past = elicited_out.past_key_values
+            elicited_logits = elicited_out.logits[:, -1, :].float()
+
+        reference = target_logits if target_logits is not None else elicited_logits
+        device = reference.device
         pad_id = self.tokenizer.pad_token_id or 0
         tokens: list[list[int]] = [[] for _ in range(batch_size)]
         target_logprobs: list[list[float]] = [[] for _ in range(batch_size)]
@@ -314,7 +336,8 @@ class LogitTiltHFAPI(HuggingFaceAPI):
                     done[row] = True
                     continue
                 tokens[row].append(token_id)
-                target_logprobs[row].append(float(logprobs[row].item()))
+                if logprobs is not None:
+                    target_logprobs[row].append(float(logprobs[row].item()))
                 if len(tokens[row]) >= max_tokens[row]:
                     done[row] = True
 
@@ -324,27 +347,32 @@ class LogitTiltHFAPI(HuggingFaceAPI):
             # finished rows are fed pad so the batch stays rectangular
             next_input = torch.where(done, torch.full_like(sampled, pad_id), sampled)
             next_input = next_input.unsqueeze(-1)
-            ones = torch.ones(batch_size, 1, dtype=target_mask.dtype, device=device)
-            target_mask = torch.cat([target_mask, ones], dim=-1)
-            elicited_mask = torch.cat([elicited_mask, ones], dim=-1)
 
-            target_out = self.model(
-                input_ids=next_input,
-                attention_mask=target_mask,
-                position_ids=target_mask.sum(-1, keepdim=True) - 1,
-                past_key_values=target_past,
-                use_cache=True,
-            )
-            elicited_out = self.model(
-                input_ids=next_input,
-                attention_mask=elicited_mask,
-                position_ids=elicited_mask.sum(-1, keepdim=True) - 1,
-                past_key_values=elicited_past,
-                use_cache=True,
-            )
-            target_past, elicited_past = target_out.past_key_values, elicited_out.past_key_values
-            target_logits = target_out.logits[:, -1, :].float()
-            elicited_logits = elicited_out.logits[:, -1, :].float()
+            if need_target:
+                ones = torch.ones(batch_size, 1, dtype=target_mask.dtype, device=device)
+                target_mask = torch.cat([target_mask, ones], dim=-1)
+                target_out = self.model(
+                    input_ids=next_input,
+                    attention_mask=target_mask,
+                    position_ids=target_mask.sum(-1, keepdim=True) - 1,
+                    past_key_values=target_past,
+                    use_cache=True,
+                )
+                target_past = target_out.past_key_values
+                target_logits = target_out.logits[:, -1, :].float()
+
+            if need_elicited:
+                ones = torch.ones(batch_size, 1, dtype=elicited_mask.dtype, device=device)
+                elicited_mask = torch.cat([elicited_mask, ones], dim=-1)
+                elicited_out = self.model(
+                    input_ids=next_input,
+                    attention_mask=elicited_mask,
+                    position_ids=elicited_mask.sum(-1, keepdim=True) - 1,
+                    past_key_values=elicited_past,
+                    use_cache=True,
+                )
+                elicited_past = elicited_out.past_key_values
+                elicited_logits = elicited_out.logits[:, -1, :].float()
 
         return list(zip(tokens, target_logprobs, strict=True))
 
@@ -470,6 +498,7 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         output.metadata = {
             "logittilt": {
                 "steering_strength": tilt.steering_strength,
+                "target_strength": tilt.target_strength,
                 "naturalness_floor": tilt.naturalness_floor,
                 **token_probability_summary(target_logprobs),
             }

@@ -45,6 +45,7 @@ inspect eval <any-task> \
 | `steering_prompt_file` | one of | — | Path to the behaviour-eliciting prompt. **Prefer this on the CLI** (see below) |
 | `steering_prompt` | these two | — | …or inline |
 | `steering_strength` | no | `1.0` | Weight on the elicited distribution (`beta` in the paper). `0` = unmodified model |
+| `target_strength` | no | `1.0` | Weight on the target's own distribution (`b1` in the paper). `0` samples from the behaviour-conditioned distribution alone — use it to check your steering prompt elicits the behaviour at all, before tuning strength |
 | `prefill` | no | `None` | Short assistant prefix opening the elicited context only; never appears in the transcript |
 | `naturalness_floor` | no | `1e-4` | Minimum probability the unmodified target must assign to a sampleable token. `0` disables |
 

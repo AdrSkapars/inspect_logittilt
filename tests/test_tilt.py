@@ -33,22 +33,23 @@ def cfg(**kw) -> TiltConfig:
 
 
 def test_zero_strength_returns_target_identically():
-    """beta=0 must recover the unmodified model exactly -- it is the control condition."""
+    """steering_strength=0 must recover the unmodified model exactly -- the control
+    condition. Now conditional on target_strength being its default 1.0."""
     target = torch.tensor([[1.0, -2.0, 3.0]])
     elicited = torch.tensor([[100.0, 100.0, -100.0]])
-    out = tilted_logits(target, elicited, 0.0)
+    out = tilted_logits(target, elicited, 1.0, 0.0)
     assert out is target  # not merely allclose: the elicited stream is not consulted
 
 
 def test_mixing_is_linear():
     target = torch.tensor([[1.0, 2.0]])
     elicited = torch.tensor([[10.0, 20.0]])
-    assert torch.equal(tilted_logits(target, elicited, 1.5), torch.tensor([[16.0, 32.0]]))
+    assert torch.equal(tilted_logits(target, elicited, 1.0, 1.5), torch.tensor([[16.0, 32.0]]))
 
 
 def test_shape_mismatch_is_an_error():
     with pytest.raises(ValueError, match="lockstep"):
-        tilted_logits(torch.zeros(1, 3), torch.zeros(1, 4), 1.0)
+        tilted_logits(torch.zeros(1, 3), torch.zeros(1, 4), 1.0, 1.0)
 
 
 # --------------------------------------------------------------------------
@@ -67,7 +68,7 @@ def test_floor_thresholds_on_the_target_not_on_the_tilted_distribution():
     essentially never say must still be excluded."""
     target = torch.tensor([[0.0, 0.0, 0.0, -20.0]])  # token 3 ~ 7e-10 under target
     elicited = torch.tensor([[0.0, 0.0, 0.0, 100.0]])  # steering wants token 3
-    probs = torch.softmax(tilted_logits(target, elicited, 1.0), dim=-1)
+    probs = torch.softmax(tilted_logits(target, elicited, 1.0, 1.0), dim=-1)
     assert probs[0, 3] > 0.99, "precondition: the tilt should favour token 3"
 
     out = apply_naturalness_floor(probs, torch.softmax(target, dim=-1), 0.01)
@@ -228,3 +229,45 @@ def test_a_colon_split_prompt_is_reassembled():
     config, _ = build_config({"steering_prompt": {"Reasoning": "be goblin-minded."}})
     assert config.steering_prompt == "Reasoning: be goblin-minded."
     assert "{" not in config.steering_prompt
+
+
+# --------------------------------------------------------------------------
+# target_strength
+# --------------------------------------------------------------------------
+
+
+def test_target_strength_zero_gives_exactly_the_elicited_distribution():
+    """The diagnostic: does the steering prompt elicit the behaviour at all,
+    before any mixing is involved?"""
+    target = torch.tensor([[1.0, 2.0, 3.0]])
+    elicited = torch.tensor([[9.0, -4.0, 0.5]])
+    out = tilted_logits(target, elicited, target_strength=0.0, steering_strength=1.0)
+    assert out is elicited
+
+
+def test_both_strengths_zero_is_rejected():
+    """z would be all zeros: a uniform draw over the vocabulary, not a model."""
+    with pytest.raises(ValueError, match="cannot both be 0"):
+        TiltConfig(steering_prompt="x", steering_strength=0.0, target_strength=0.0)
+
+
+def test_target_strength_weights_the_target_stream():
+    target = torch.tensor([[2.0, 4.0]])
+    elicited = torch.tensor([[1.0, 1.0]])
+    out = tilted_logits(target, elicited, target_strength=0.5, steering_strength=2.0)
+    assert torch.equal(out, torch.tensor([[3.0, 4.0]]))
+
+
+def test_plausibility_is_reported_even_at_target_strength_zero():
+    """The target stream is always generated, so prompted-only sampling still
+    measures how probable the unmodified model finds what it produced."""
+    target = torch.tensor([[0.0, 5.0]])
+    elicited = torch.tensor([[9.0, -9.0]])
+    config = TiltConfig(
+        steering_prompt="x", steering_strength=1.0, target_strength=0.0, naturalness_floor=0.0
+    )
+    tokens, logprobs = sample_next(target, elicited, config)
+    assert tokens.shape == (1,)
+    assert logprobs is not None
+    expected = torch.log_softmax(target, dim=-1)[0, tokens[0]]
+    assert torch.allclose(logprobs[0], expected, atol=1e-6)

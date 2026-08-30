@@ -47,6 +47,12 @@ class TiltConfig:
             ``beta`` in the paper. Defaults to ``1.0`` as a starting point for
             tuning. ``0.0`` exactly recovers the unmodified target model, which is
             the method's built-in control condition.
+        target_strength: Weight on the target's own distribution (``b1`` in the
+            paper). Defaults to ``1.0``. Set to ``0`` -- with
+            ``steering_strength=1`` and ``naturalness_floor=0`` -- to sample from
+            the behaviour-conditioned distribution alone, which answers whether
+            the steering prompt elicits the behaviour at all, before any mixing
+            is involved.
         prefill: Optional short assistant prefix opening the elicited context. It
             is never part of the returned completion and never reaches the
             transcript -- it only shapes the second distribution.
@@ -56,6 +62,7 @@ class TiltConfig:
 
     steering_prompt: str
     steering_strength: float = 1.0
+    target_strength: float = 1.0
     prefill: str | None = None
     naturalness_floor: float = 1e-4
 
@@ -70,6 +77,16 @@ class TiltConfig:
             )
         if not self.steering_prompt or not self.steering_prompt.strip():
             raise ValueError("steering_prompt must be a non-empty string")
+        w = self.target_strength
+        if not isinstance(w, (int, float)) or math.isnan(w) or math.isinf(w):
+            raise ValueError(f"target_strength must be a finite number, got {w!r}")
+        if w < 0:
+            raise ValueError(f"target_strength must be >= 0, got {w}")
+        if w == 0 and s == 0:
+            raise ValueError(
+                "target_strength and steering_strength cannot both be 0: that leaves "
+                "a uniform distribution over the whole vocabulary, not a model."
+            )
         f = self.naturalness_floor
         if not isinstance(f, (int, float)) or math.isnan(f):
             raise ValueError(f"naturalness_floor must be a number, got {f!r}")
@@ -78,22 +95,45 @@ class TiltConfig:
 
 
 def tilted_logits(
-    target_logits: Tensor, elicited_logits: Tensor, steering_strength: float
+    target_logits: Tensor | None,
+    elicited_logits: Tensor | None,
+    target_strength: float,
+    steering_strength: float,
 ) -> Tensor:
-    """Mix the two logit streams: ``z = l_tgt + s * l_beh``.
+    """Mix the two logit streams: ``z = w * l_tgt + s * l_beh``.
 
-    At ``steering_strength == 0`` this returns the target logits unchanged (not
-    merely numerically close), which is what guarantees the control condition.
+    Either stream may be ``None`` when its weight is zero and the caller has
+    skipped the forward pass that would have produced it.
+
+    With ``steering_strength == 0`` and ``target_strength == 1`` this returns the
+    target logits unchanged (not merely numerically close), which is what
+    guarantees the control condition.
     """
-    if target_logits.shape != elicited_logits.shape:
+    if (
+        target_logits is not None
+        and elicited_logits is not None
+        and target_logits.shape != elicited_logits.shape
+    ):
         raise ValueError(
             f"logit shape mismatch: target {tuple(target_logits.shape)} vs "
             f"elicited {tuple(elicited_logits.shape)}. The two contexts must be "
             "stepped in lockstep over the same vocabulary."
         )
+
     if steering_strength == 0.0:
-        return target_logits
-    return target_logits + steering_strength * elicited_logits
+        if target_logits is None:
+            raise ValueError("steering_strength is 0 but no target logits were supplied")
+        return target_logits if target_strength == 1.0 else target_strength * target_logits
+
+    if target_strength == 0.0 or target_logits is None:
+        if elicited_logits is None:
+            raise ValueError("target_strength is 0 but no elicited logits were supplied")
+        return elicited_logits if steering_strength == 1.0 else steering_strength * elicited_logits
+
+    if elicited_logits is None:
+        raise ValueError("steering_strength is non-zero but no elicited logits were supplied")
+
+    return target_strength * target_logits + steering_strength * elicited_logits
 
 
 def apply_naturalness_floor(
@@ -133,7 +173,7 @@ def apply_naturalness_floor(
 
 def sample_next(
     target_logits: Tensor,
-    elicited_logits: Tensor,
+    elicited_logits: Tensor | None,
     config: TiltConfig,
     temperature: float = 1.0,
     generator: torch.Generator | None = None,
@@ -141,22 +181,27 @@ def sample_next(
     """Draw one token per batch row under the LogitTilt rule.
 
     Args:
-        target_logits: Unmodified target next-token logits, ``[B, V]``.
-        elicited_logits: Behaviour-conditioned next-token logits, ``[B, V]``.
-        config: Steering strength and naturalness floor.
-        temperature: Applied to the tilted logits only.
+        target_logits: Unmodified target next-token logits ``[B, V]``. Always
+            supplied: it carries the plausibility measurement even when
+            ``target_strength`` is 0.
+        elicited_logits: Behaviour-conditioned next-token logits ``[B, V]``, or
+            ``None`` when ``steering_strength`` is 0 and that pass was skipped.
+        config: Strengths and naturalness floor.
+        temperature: Applied to the mixed logits only.
         generator: Optional RNG, for reproducible tests.
 
     Returns:
-        ``(tokens, target_logprobs)`` -- the sampled token ids ``[B]``, and the
-        log-probability each sampled token had under the *unmodified* target
-        ``[B]``. The second value is the on-policy plausibility metric and is
-        free here, since the target logits were computed for this step anyway.
+        ``(tokens, target_logprobs)``. The second value is the log-probability
+        each sampled token had under the *unmodified* target -- the on-policy
+        plausibility metric, free here because those logits were computed for
+        this step anyway.
     """
     if temperature <= 0.0:
         raise ValueError(f"temperature must be > 0, got {temperature}")
 
-    z = tilted_logits(target_logits, elicited_logits, config.steering_strength)
+    z = tilted_logits(
+        target_logits, elicited_logits, config.target_strength, config.steering_strength
+    )
     probs = torch.softmax(z / temperature, dim=-1)
     target_probs = torch.softmax(target_logits, dim=-1)
     probs = apply_naturalness_floor(probs, target_probs, config.naturalness_floor)
@@ -165,13 +210,12 @@ def sample_next(
 
     # log p_target(token) via logsumexp, avoiding a full [B, V] log_softmax tensor
     chosen = target_logits.gather(-1, tokens.unsqueeze(-1)).squeeze(-1)
-    target_logprobs = chosen - torch.logsumexp(target_logits, dim=-1)
-
-    return tokens, target_logprobs
+    return tokens, chosen - torch.logsumexp(target_logits, dim=-1)
 
 
 _TILT_ARGS = (
     "steering_strength",
+    "target_strength",
     "steering_prompt",
     "steering_prompt_file",
     "prefill",
@@ -245,6 +289,11 @@ def build_config(model_args: dict[str, Any]) -> tuple[TiltConfig, dict[str, Any]
         steering_strength=(
             _as_float("steering_strength", taken["steering_strength"])
             if "steering_strength" in taken
+            else 1.0
+        ),
+        target_strength=(
+            _as_float("target_strength", taken["target_strength"])
+            if "target_strength" in taken
             else 1.0
         ),
         prefill=_as_text("prefill", prefill) if prefill else None,
