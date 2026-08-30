@@ -217,7 +217,7 @@ def test_decode_returns_one_result_per_request(api):
         tilt=api.tilt,
     )
     assert len(results) == 2
-    for tokens, logprobs in results:
+    for tokens, logprobs, _alternatives in results:
         assert len(tokens) == len(logprobs)
         assert len(tokens) <= 4
 
@@ -424,3 +424,80 @@ def test_reminder_falls_back_to_a_new_user_turn_when_there_is_none(api, monkeypa
     messages = api._elicited_messages([ChatMessageAssistant(content="only an assistant turn")])
     assert messages[-1].role == "user"
     assert messages[-1].text == "REMEMBER GOBLINS"
+
+
+# --------------------------------------------------------------------------
+# GenerateConfig support (matching what inspect's own hf provider honours)
+# --------------------------------------------------------------------------
+
+
+def test_stop_sequence_truncates_the_completion():
+    from inspect_logittilt._hf import truncate_at_stop
+
+    assert truncate_at_stop("answer 42 STOP trailing", ["STOP"]) == "answer 42 "
+    assert truncate_at_stop("no marker here", ["STOP"]) == "no marker here"
+    assert truncate_at_stop("anything", None) == "anything"
+
+
+def test_stop_sequence_cuts_at_the_earliest_match():
+    from inspect_logittilt._hf import truncate_at_stop
+
+    assert truncate_at_stop("a END b STOP c", ["STOP", "END"]) == "a "
+
+
+def test_stop_seqs_end_generation_early(api):
+    """The row should stop once the sequence appears, not run to max_tokens."""
+    from inspect_ai.model import ChatMessageUser, GenerateConfig
+
+    # a single space is common enough in random-model output to hit quickly
+    output = asyncio.run(
+        api.generate(
+            [ChatMessageUser(content="hello")],
+            [],
+            "none",
+            GenerateConfig(max_tokens=60, stop_seqs=[" "]),
+        )
+    )
+    assert output.metadata["logittilt"]["tokens"] < 60
+
+
+def test_the_same_seed_gives_the_same_completion(api):
+    from inspect_ai.model import ChatMessageUser, GenerateConfig
+
+    def run(seed):
+        return asyncio.run(
+            api.generate(
+                [ChatMessageUser(content="hello")],
+                [],
+                "none",
+                GenerateConfig(max_tokens=12, seed=seed),
+            )
+        ).completion
+
+    assert run(1234) == run(1234)
+
+
+def test_sampling_options_split_a_batch(api):
+    """A batch shares one sampling rule, so differing options must not be
+    silently decoded under someone else's settings."""
+    from inspect_ai.model import ChatMessageUser, GenerateConfig
+
+    async def run_both():
+        return await asyncio.gather(
+            api.generate(
+                [ChatMessageUser(content="hello")],
+                [],
+                "none",
+                GenerateConfig(max_tokens=4, top_k=1),
+            ),
+            api.generate(
+                [ChatMessageUser(content="hello")],
+                [],
+                "none",
+                GenerateConfig(max_tokens=4, top_p=0.5),
+            ),
+        )
+
+    first, second = asyncio.run(run_both())
+    assert isinstance(first.completion, str)
+    assert isinstance(second.completion, str)

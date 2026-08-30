@@ -99,6 +99,22 @@ give it room, or turn the trace off:
 -M enable_thinking=false
 ```
 
+## Generation options
+
+Every `GenerateConfig` option that Inspect's own `hf` provider honours is
+supported: `max_tokens`, `temperature`, `top_p`, `top_k`, `seed`, `stop_seqs`,
+`logprobs` and `top_logprobs`. Options `hf` does not implement (`response_schema`,
+`num_choices`, penalties, `logit_bias`, `reasoning_*`) are ignored here too.
+
+Two deliberate differences from `hf`:
+
+- **Logprobs come from the unmodified target**, not from the distribution
+  sampled from. The tokens were chosen under the tilt; the probabilities say how
+  plausible the *unsteered* model finds them. That pairing is the point of the
+  method, but it is not the number `hf` would return.
+- **`seed` reproduces a decode for a fixed batch.** Batch composition depends on
+  arrival timing, so two otherwise identical runs can group requests differently.
+
 ## Batching
 
 Concurrent `generate()` calls are grouped into a single set of forward passes.

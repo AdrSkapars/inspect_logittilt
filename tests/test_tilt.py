@@ -15,9 +15,11 @@ import torch
 from inspect_logittilt._tilt import (
     TiltConfig,
     apply_naturalness_floor,
+    apply_top_k_top_p,
     build_config,
     sample_next,
     tilted_logits,
+    top_alternatives,
 )
 
 
@@ -104,7 +106,7 @@ def test_reported_logprob_is_the_targets_not_the_tilted_one():
     target = torch.tensor([[0.0, 5.0]])
     elicited = torch.tensor([[50.0, 0.0]])  # push hard toward token 0
     g = torch.Generator().manual_seed(0)
-    tokens, logprobs = sample_next(target, elicited, cfg(steering_strength=1.0), generator=g)
+    tokens, logprobs, _ = sample_next(target, elicited, cfg(steering_strength=1.0), generator=g)
 
     expected = torch.log_softmax(target, dim=-1)[0, tokens[0]]
     assert torch.allclose(logprobs[0], expected, atol=1e-6)
@@ -266,7 +268,7 @@ def test_plausibility_is_reported_even_at_target_strength_zero():
     config = TiltConfig(
         steering_prompt="x", steering_strength=1.0, target_strength=0.0, naturalness_floor=0.0
     )
-    tokens, logprobs = sample_next(target, elicited, config)
+    tokens, logprobs, _ = sample_next(target, elicited, config)
     assert tokens.shape == (1,)
     assert logprobs is not None
     expected = torch.log_softmax(target, dim=-1)[0, tokens[0]]
@@ -316,3 +318,65 @@ def test_a_colon_split_reminder_is_reassembled():
     dict -- the shape that silently corrupted prompts twice already."""
     config, _ = build_config({"steering_reminder": {"Reminder": "mention goblins."}})
     assert config.steering_reminder == "Reminder: mention goblins."
+
+
+# --------------------------------------------------------------------------
+# top-k / top-p
+# --------------------------------------------------------------------------
+
+
+def test_top_k_keeps_only_the_k_most_likely():
+    probs = torch.tensor([[0.5, 0.3, 0.15, 0.05]])
+    out = apply_top_k_top_p(probs, top_k=2)
+    assert out[0, 2] == 0.0 and out[0, 3] == 0.0
+    assert torch.allclose(out[0, :2], torch.tensor([0.625, 0.375]), atol=1e-6)
+
+
+def test_top_p_keeps_the_token_that_crosses_the_threshold():
+    """Nucleus sampling includes the token that reaches top_p, never drops it."""
+    probs = torch.tensor([[0.5, 0.3, 0.15, 0.05]])
+    out = apply_top_k_top_p(probs, top_p=0.7)
+    assert out[0, 0] > 0 and out[0, 1] > 0  # 0.5 then 0.8 crosses 0.7
+    assert out[0, 2] == 0.0 and out[0, 3] == 0.0
+
+
+def test_truncation_always_leaves_something_to_sample():
+    """Neither can empty a row -- the naturalness floor runs afterwards and has
+    its own fallback, but it must not be handed an empty distribution."""
+    probs = torch.tensor([[0.97, 0.02, 0.01]])
+    for kwargs in ({"top_k": 1}, {"top_p": 0.01}, {"top_k": 1, "top_p": 0.01}):
+        out = apply_top_k_top_p(probs, **kwargs)
+        assert out.sum() > 0
+        assert torch.allclose(out.sum(dim=-1), torch.ones(1), atol=1e-6)
+
+
+def test_no_truncation_is_a_noop():
+    probs = torch.tensor([[0.5, 0.3, 0.2]])
+    assert torch.allclose(apply_top_k_top_p(probs), probs, atol=1e-6)
+
+
+def test_top_k_of_one_is_deterministic():
+    target = torch.tensor([[0.0, 5.0, 1.0]])
+    elicited = torch.zeros(1, 3)
+    config = cfg(steering_strength=0.0)
+    draws = {int(sample_next(target, elicited, config, top_k=1)[0][0]) for _ in range(50)}
+    assert draws == {1}, "top_k=1 must always take the argmax"
+
+
+def test_top_alternatives_come_from_the_unmodified_target():
+    """Alternatives answer "what would the base model have said instead", so they
+    are read from the target, not from the tilted distribution."""
+    target = torch.tensor([[0.0, 5.0, 1.0, -3.0]])
+    ids, values = top_alternatives(target, 2)
+
+    assert ids.shape == (1, 2) and values.shape == (1, 2)
+    assert ids[0].tolist() == [1, 2]  # target's two most likely, in order
+    expected = torch.log_softmax(target, dim=-1)[0, ids[0]]
+    assert torch.allclose(values[0], expected, atol=1e-6)
+
+
+def test_alternatives_are_only_computed_when_asked_for():
+    target = torch.tensor([[0.0, 1.0]])
+    elicited = torch.zeros(1, 2)
+    assert sample_next(target, elicited, cfg())[2] is None
+    assert sample_next(target, elicited, cfg(), top_logprobs=2)[2] is not None

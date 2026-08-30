@@ -29,7 +29,10 @@ from inspect_ai.model import (
     ChatMessageSystem,
     ChatMessageUser,
     GenerateConfig,
+    Logprob,
+    Logprobs,
     ModelOutput,
+    TopLogprob,
 )
 from inspect_ai.model._providers.hf import HuggingFaceAPI
 from inspect_ai.model._providers.util import ChatAPIHandler, HFHandler
@@ -92,6 +95,23 @@ def positions_from_mask(attention_mask: torch.Tensor) -> torch.Tensor:
     return (attention_mask.cumsum(-1) - 1).clamp(min=0)
 
 
+def truncate_at_stop(completion: str, stop_seqs: list[str] | None) -> str:
+    """Cut the completion at the earliest stop sequence, excluding it.
+
+    Decoding stops a row as soon as a stop sequence appears in its tail, but the
+    token that completed the match usually carries trailing text as well, so the
+    string still has to be trimmed. Excluding the sequence itself matches what
+    every other provider returns.
+    """
+    if not stop_seqs:
+        return completion
+    cut = min(
+        (completion.index(stop) for stop in stop_seqs if stop in completion),
+        default=None,
+    )
+    return completion if cut is None else completion[:cut]
+
+
 def token_probability_summary(target_logprobs: list[float]) -> dict[str, float | int]:
     """On-policy plausibility of a completion, as percentages.
 
@@ -125,6 +145,11 @@ class _PendingRequest:
     elicited_text: str
     max_tokens: int
     temperature: float
+    top_k: int | None
+    top_p: float | None
+    seed: int | None
+    stop_seqs: list[str] | None
+    top_logprobs: int | None
     # snapshot, not a reference to self.tilt: the provider's config can be
     # mutated between queueing and decoding, and reporting settings that were
     # not the ones actually used is worse than not reporting them.
@@ -305,7 +330,12 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         max_tokens: list[int],
         temperature: float,
         tilt: TiltConfig,
-    ) -> list[tuple[list[int], list[float]]]:
+        top_k: int | None = None,
+        top_p: float | None = None,
+        seed: int | None = None,
+        stop_seqs: list[str] | None = None,
+        top_logprobs: int | None = None,
+    ) -> list[tuple[list[int], list[float], list[list[tuple[int, float]]]]]:
         """Step both contexts in lockstep for a batch of requests.
 
         Two KV caches advance together over the *same* sampled tokens: whatever is
@@ -364,14 +394,37 @@ class LogitTiltHFAPI(HuggingFaceAPI):
 
         reference = target_logits if target_logits is not None else elicited_logits
         device = reference.device
+
+        # A seeded generator makes a decode reproducible for a fixed batch. Batch
+        # composition itself depends on arrival timing, so identical eval runs can
+        # still group requests differently -- documented rather than pretended away.
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(device=device)
+            generator.manual_seed(int(seed))
+
+        # how far back to look for a stop sequence: enough tokens to contain the
+        # longest one, decoded fresh each step rather than accumulated, so token
+        # boundaries cannot split a match
+        stop_window = 0
+        if stop_seqs:
+            stop_window = max(8, max(len(s) for s in stop_seqs))
         pad_id = self.tokenizer.pad_token_id or 0
         tokens: list[list[int]] = [[] for _ in range(batch_size)]
         target_logprobs: list[list[float]] = [[] for _ in range(batch_size)]
+        alternatives: list[list[list[tuple[int, float]]]] = [[] for _ in range(batch_size)]
         done = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
         for _ in range(max(max_tokens)):
-            sampled, logprobs = sample_next(
-                target_logits, elicited_logits, tilt, temperature=temperature
+            sampled, logprobs, step_alternatives = sample_next(
+                target_logits,
+                elicited_logits,
+                tilt,
+                temperature=temperature,
+                generator=generator,
+                top_k=top_k,
+                top_p=top_p,
+                top_logprobs=top_logprobs,
             )
 
             for row in range(batch_size):
@@ -384,8 +437,22 @@ class LogitTiltHFAPI(HuggingFaceAPI):
                 tokens[row].append(token_id)
                 if logprobs is not None:
                     target_logprobs[row].append(float(logprobs[row].item()))
+                if step_alternatives is not None:
+                    ids, values = step_alternatives
+                    alternatives[row].append(
+                        [
+                            (int(i), float(v))
+                            for i, v in zip(ids[row].tolist(), values[row].tolist())
+                        ]
+                    )
                 if len(tokens[row]) >= max_tokens[row]:
                     done[row] = True
+                elif stop_seqs:
+                    tail = self.tokenizer.decode(
+                        tokens[row][-stop_window:], skip_special_tokens=True
+                    )
+                    if any(stop in tail for stop in stop_seqs):
+                        done[row] = True
 
             if bool(done.all()):
                 break
@@ -420,7 +487,7 @@ class LogitTiltHFAPI(HuggingFaceAPI):
                 elicited_past = elicited_out.past_key_values
                 elicited_logits = elicited_out.logits[:, -1, :].float()
 
-        return list(zip(tokens, target_logprobs, strict=True))
+        return list(zip(tokens, target_logprobs, alternatives, strict=True))
 
     # ------------------------------------------------------------------
     # ModelAPI
@@ -467,14 +534,26 @@ class LogitTiltHFAPI(HuggingFaceAPI):
                     break
 
             # A batch shares one sampling rule, so it must be homogeneous in
-            # both temperature and tilt config; anything else goes back on the
-            # queue. In practice an eval uses one of each throughout, so this
-            # rarely splits anything.
+            # everything that defines it -- temperature, tilt config and the
+            # sampling options. Anything else goes back on the queue. In practice
+            # an eval uses one setting throughout, so this rarely splits.
+            def rule(request: _PendingRequest) -> tuple:
+                return (
+                    request.temperature,
+                    request.tilt,
+                    request.top_k,
+                    request.top_p,
+                    request.seed,
+                    tuple(request.stop_seqs or ()),
+                    request.top_logprobs,
+                )
+
+            head = rule(batch[0])
+            grouped = [r for r in batch if rule(r) == head]
+            deferred = [r for r in batch if rule(r) != head]
+            batch = grouped
             temperature = batch[0].temperature
             tilt = batch[0].tilt
-            grouped = [r for r in batch if r.temperature == temperature and r.tilt == tilt]
-            deferred = [r for r in batch if r not in grouped]
-            batch = grouped
             for request in deferred:
                 self._queue.put_nowait(request)
 
@@ -487,6 +566,11 @@ class LogitTiltHFAPI(HuggingFaceAPI):
                     [r.max_tokens for r in batch],
                     temperature,
                     tilt,
+                    batch[0].top_k,
+                    batch[0].top_p,
+                    batch[0].seed,
+                    batch[0].stop_seqs,
+                    batch[0].top_logprobs,
                 )
             except Exception as exc:  # noqa: BLE001 - propagate to every waiter
                 for request in batch:
@@ -502,6 +586,41 @@ class LogitTiltHFAPI(HuggingFaceAPI):
     # ModelAPI
     # ------------------------------------------------------------------
 
+    def _build_logprobs(
+        self,
+        tokens: list[int],
+        target_logprobs: list[float],
+        alternatives: list[list[tuple[int, float]]],
+    ) -> Logprobs:
+        """Per-token logprobs, taken from the UNMODIFIED target distribution.
+
+        A semantic difference from ``hf/`` worth knowing: upstream reports the
+        distribution it sampled from, whereas the tokens here were chosen under
+        the tilt while the probabilities describe what the base model thought of
+        them. That is the more useful pairing for this method -- how plausible
+        the unsteered model finds the steered text -- but it is not the same
+        number ``hf/`` would return.
+        """
+        content: list[Logprob] = []
+        for i, (token_id, logprob) in enumerate(zip(tokens, target_logprobs, strict=False)):
+            top = [
+                TopLogprob(
+                    token=self.tokenizer.convert_ids_to_tokens(alt_id),
+                    logprob=alt_logprob,
+                    bytes=None,
+                )
+                for alt_id, alt_logprob in (alternatives[i] if i < len(alternatives) else [])
+            ]
+            content.append(
+                Logprob(
+                    token=self.tokenizer.convert_ids_to_tokens(token_id),
+                    logprob=logprob,
+                    bytes=None,
+                    top_logprobs=top or None,
+                )
+            )
+        return Logprobs(content=content)
+
     async def generate(
         self,
         input: list[ChatMessage],
@@ -514,17 +633,27 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         temperature = config.temperature if config.temperature is not None else 1.0
 
         tilt = self.tilt
-        tokens, target_logprobs = await self._submit(
+        stop_seqs = list(config.stop_seqs) if config.stop_seqs else None
+        # config.logprobs asks for them at all; top_logprobs asks for alternatives
+        wants_logprobs = bool(config.logprobs)
+        top_logprobs = config.top_logprobs if wants_logprobs else None
+        tokens, target_logprobs, alternatives = await self._submit(
             _PendingRequest(
                 target_text=target_text,
                 elicited_text=elicited_text,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                top_k=config.top_k,
+                top_p=config.top_p,
+                seed=config.seed,
+                stop_seqs=stop_seqs,
+                top_logprobs=top_logprobs,
                 tilt=tilt,
                 future=asyncio.get_running_loop().create_future(),
             )
         )
         completion = self.tokenizer.decode(tokens, skip_special_tokens=True)
+        completion = truncate_at_stop(completion, stop_seqs)
 
         # Tool definitions already reach both prompts through the inherited
         # hf_chat(), which renders them with the model's own template. All that
@@ -540,7 +669,19 @@ class LogitTiltHFAPI(HuggingFaceAPI):
             else ChatMessageAssistant(content=completion, model=self.model_name, source="generate")
         )
 
-        output = ModelOutput(model=self.model_name, choices=[ChatCompletionChoice(message=message)])
+        output = ModelOutput(
+            model=self.model_name,
+            choices=[
+                ChatCompletionChoice(
+                    message=message,
+                    logprobs=(
+                        self._build_logprobs(tokens, target_logprobs, alternatives)
+                        if wants_logprobs
+                        else None
+                    ),
+                )
+            ],
+        )
         output.metadata = {
             "logittilt": {
                 "steering_strength": tilt.steering_strength,

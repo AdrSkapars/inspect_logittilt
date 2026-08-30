@@ -152,6 +152,36 @@ def tilted_logits(
     return target_strength * target_logits + steering_strength * elicited_logits
 
 
+def apply_top_k_top_p(
+    probs: Tensor, top_k: int | None = None, top_p: float | None = None
+) -> Tensor:
+    """Truncate the sampling distribution, then renormalise.
+
+    Applied to the TILTED distribution -- these are the user's sampling
+    preferences over what we actually sample from. The naturalness floor is a
+    separate, harder constraint applied afterwards, and it thresholds on the
+    unmodified target instead.
+
+    Both always keep at least one token per row, so this cannot empty a row.
+    """
+    if top_k:
+        k = min(int(top_k), probs.shape[-1])
+        threshold = probs.topk(k, dim=-1).values[..., -1:]
+        probs = torch.where(probs >= threshold, probs, torch.zeros_like(probs))
+
+    if top_p is not None and 0.0 < top_p < 1.0:
+        ordered, indices = probs.sort(dim=-1, descending=True)
+        cumulative = ordered.cumsum(dim=-1)
+        # keep the smallest prefix whose mass reaches top_p; shifting by one
+        # means the token that crosses the threshold is kept, never dropped
+        drop = cumulative - ordered > top_p
+        ordered = torch.where(drop, torch.zeros_like(ordered), ordered)
+        probs = torch.zeros_like(probs).scatter(-1, indices, ordered)
+
+    total = probs.sum(dim=-1, keepdim=True)
+    return probs / total.clamp_min(torch.finfo(probs.dtype).tiny)
+
+
 def apply_naturalness_floor(
     probs: Tensor, target_probs: Tensor, naturalness_floor: float
 ) -> Tensor:
@@ -187,13 +217,31 @@ def apply_naturalness_floor(
     return masked / total.clamp_min(torch.finfo(masked.dtype).tiny)
 
 
+def top_alternatives(target_logits: Tensor, top_logprobs: int) -> tuple[Tensor, Tensor]:
+    """The ``k`` most likely tokens per row under the UNMODIFIED target.
+
+    Reported from the target rather than the tilted distribution deliberately:
+    the useful question is what the base model would have said here, alongside
+    what steering actually made it say.
+
+    Returns ``(token_ids, logprobs)``, each ``[B, k]``.
+    """
+    logprobs = target_logits - torch.logsumexp(target_logits, dim=-1, keepdim=True)
+    k = min(int(top_logprobs), logprobs.shape[-1])
+    values, indices = logprobs.topk(k, dim=-1)
+    return indices, values
+
+
 def sample_next(
     target_logits: Tensor,
     elicited_logits: Tensor | None,
     config: TiltConfig,
     temperature: float = 1.0,
     generator: torch.Generator | None = None,
-) -> tuple[Tensor, Tensor]:
+    top_k: int | None = None,
+    top_p: float | None = None,
+    top_logprobs: int | None = None,
+) -> tuple[Tensor, Tensor, tuple[Tensor, Tensor] | None]:
     """Draw one token per batch row under the LogitTilt rule.
 
     Args:
@@ -204,13 +252,19 @@ def sample_next(
             ``None`` when ``steering_strength`` is 0 and that pass was skipped.
         config: Strengths and naturalness floor.
         temperature: Applied to the mixed logits only.
-        generator: Optional RNG, for reproducible tests.
+        generator: Optional RNG, for reproducible sampling.
+        top_k: Keep only the k most likely tokens of the tilted distribution.
+        top_p: Keep the smallest set of tilted-distribution tokens whose mass
+            reaches ``top_p``.
+        top_logprobs: If set, also return that many alternative tokens per row,
+            taken from the unmodified target.
 
     Returns:
-        ``(tokens, target_logprobs)``. The second value is the log-probability
-        each sampled token had under the *unmodified* target -- the on-policy
-        plausibility metric, free here because those logits were computed for
-        this step anyway.
+        ``(tokens, target_logprobs, alternatives)``. The second value is the
+        log-probability each sampled token had under the *unmodified* target --
+        the on-policy plausibility metric, free here because those logits were
+        computed for this step anyway. The third is ``None`` unless
+        ``top_logprobs`` was requested.
     """
     if temperature <= 0.0:
         raise ValueError(f"temperature must be > 0, got {temperature}")
@@ -219,6 +273,7 @@ def sample_next(
         target_logits, elicited_logits, config.target_strength, config.steering_strength
     )
     probs = torch.softmax(z / temperature, dim=-1)
+    probs = apply_top_k_top_p(probs, top_k=top_k, top_p=top_p)
     target_probs = torch.softmax(target_logits, dim=-1)
     probs = apply_naturalness_floor(probs, target_probs, config.naturalness_floor)
 
@@ -226,7 +281,10 @@ def sample_next(
 
     # log p_target(token) via logsumexp, avoiding a full [B, V] log_softmax tensor
     chosen = target_logits.gather(-1, tokens.unsqueeze(-1)).squeeze(-1)
-    return tokens, chosen - torch.logsumexp(target_logits, dim=-1)
+    sampled_logprobs = chosen - torch.logsumexp(target_logits, dim=-1)
+
+    alternatives = top_alternatives(target_logits, top_logprobs) if top_logprobs else None
+    return tokens, sampled_logprobs, alternatives
 
 
 _TILT_ARGS = (
