@@ -71,7 +71,25 @@ Not yet supported:
   HuggingFace provider's tool-call parsing. Passing tools raises rather than
   silently dropping them, since a quietly tool-less target would produce
   wrong-looking audit results. Text-generation evals are unaffected.
-- **Batching.** One sample at a time; concurrent samples do not share a batch.
+
+## Reasoning models
+
+On a model that emits a reasoning trace, the steering conditions the whole
+generation -- trace included -- but the behaviour you are measuring usually
+lives in the answer that follows. With a tight `max_tokens` the trace can
+consume the entire budget, which looks exactly like steering not working. Either
+give it room, or turn the trace off:
+
+```bash
+-M enable_thinking=false
+```
+
+## Batching
+
+Concurrent `generate()` calls are grouped into a single set of forward passes.
+`batch_size` is inherited from the HuggingFace provider (default 8), so
+`-M batch_size=16` works as it does on `hf/`. Requests with different
+`max_tokens` batch together and each stops at its own limit.
 
 ## Plausibility metadata
 

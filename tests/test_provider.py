@@ -201,7 +201,9 @@ def test_padding_does_not_change_a_rows_next_token_distribution(api):
 
 
 def test_decode_returns_one_result_per_request(api):
-    results = api._decode(["hello", "goodbye"], ["hello", "goodbye"], max_tokens=4, temperature=1.0)
+    results = api._decode(
+        ["hello", "goodbye"], ["hello", "goodbye"], max_tokens=[4, 4], temperature=1.0
+    )
     assert len(results) == 2
     for tokens, logprobs in results:
         assert len(tokens) == len(logprobs)
@@ -210,4 +212,85 @@ def test_decode_returns_one_result_per_request(api):
 
 def test_decode_rejects_mismatched_batches(api):
     with pytest.raises(ValueError, match="same length"):
-        api._decode(["a", "b"], ["a"], max_tokens=2, temperature=1.0)
+        api._decode(["a", "b"], ["a"], max_tokens=[2, 2], temperature=1.0)
+
+
+def test_per_row_max_tokens_are_independent(api):
+    """A batch mixes requests with different budgets; each must stop at its own."""
+    results = api._decode(
+        ["hello", "hello", "hello"],
+        ["hello", "hello", "hello"],
+        max_tokens=[2, 5, 8],
+        temperature=1.0,
+    )
+    assert len(results[0][0]) <= 2
+    assert len(results[1][0]) <= 5
+    assert len(results[2][0]) <= 8
+
+
+def test_concurrent_generates_are_batched_and_each_gets_its_own_result(api):
+    """Inspect fans samples out concurrently; they should share forward passes
+    while still returning individually correct results."""
+    from inspect_ai.model import ChatMessageUser, GenerateConfig
+
+    prompts = ["hello", "goodbye", "what is the time"]
+    budgets = [3, 5, 4]
+
+    async def run_all():
+        return await asyncio.gather(
+            *(
+                api.generate(
+                    [ChatMessageUser(content=prompt)],
+                    [],
+                    "none",
+                    GenerateConfig(max_tokens=budget),
+                )
+                for prompt, budget in zip(prompts, budgets, strict=True)
+            )
+        )
+
+    outputs = asyncio.run(run_all())
+
+    assert len(outputs) == len(prompts)
+    for output, budget in zip(outputs, budgets, strict=True):
+        assert isinstance(output.completion, str)
+        assert output.metadata["logittilt"]["tokens"] <= budget
+
+
+def test_a_failing_batch_propagates_to_every_waiter(api, monkeypatch):
+    """One bad decode must not leave the other callers hanging forever."""
+    from inspect_ai.model import ChatMessageUser, GenerateConfig
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("decode exploded")
+
+    monkeypatch.setattr(api, "_decode", boom)
+
+    async def run_two():
+        return await asyncio.gather(
+            *(
+                api.generate([ChatMessageUser(content=p)], [], "none", GenerateConfig(max_tokens=2))
+                for p in ("a", "b")
+            ),
+            return_exceptions=True,
+        )
+
+    results = asyncio.run(run_two())
+    assert len(results) == 2
+    assert all(isinstance(r, RuntimeError) for r in results)
+
+
+def test_the_batcher_survives_a_new_event_loop(api):
+    """asyncio.Queue binds to its creating loop. A provider outlives any single
+    loop, so a second asyncio.run() must not hit "bound to a different event loop"."""
+    from inspect_ai.model import ChatMessageUser, GenerateConfig
+
+    async def once():
+        return await api.generate(
+            [ChatMessageUser(content="hello")], [], "none", GenerateConfig(max_tokens=2)
+        )
+
+    first = asyncio.run(once())
+    second = asyncio.run(once())
+    assert isinstance(first.completion, str)
+    assert isinstance(second.completion, str)

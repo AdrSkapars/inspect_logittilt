@@ -15,8 +15,10 @@ change breaks loudly in CI rather than silently for users.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -103,6 +105,24 @@ def token_probability_summary(target_logprobs: list[float]) -> dict[str, float |
         "geometric_mean_token_prob": 100.0 * math.exp(sum(target_logprobs) / len(probs)),
         "min_token_prob": 100.0 * min(probs),
     }
+
+
+DEFAULT_BATCH_SIZE = 8
+# how long to keep collecting arrivals after the first one. Inspect fires its
+# samples off together, so a few milliseconds is enough to catch the burst, and
+# it is nothing against a multi-second generation.
+BATCH_LINGER_SECONDS = 0.01
+
+
+@dataclass
+class _PendingRequest:
+    """One generate() call waiting for a batch to form."""
+
+    target_text: str
+    elicited_text: str
+    max_tokens: int
+    temperature: float
+    future: asyncio.Future = field(repr=False)
 
 
 class LogitTiltHFAPI(HuggingFaceAPI):
@@ -215,7 +235,7 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         self,
         target_texts: list[str],
         elicited_texts: list[str],
-        max_tokens: int,
+        max_tokens: list[int],
         temperature: float,
     ) -> list[tuple[list[int], list[float]]]:
         """Step both contexts in lockstep for a batch of requests.
@@ -230,8 +250,8 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         keeps being fed pad tokens so shapes stay rectangular; its outputs are
         discarded.
         """
-        if len(target_texts) != len(elicited_texts):
-            raise ValueError("target and elicited batches must be the same length")
+        if len(target_texts) != len(elicited_texts) or len(target_texts) != len(max_tokens):
+            raise ValueError("target, elicited and max_tokens batches must be the same length")
         batch_size = len(target_texts)
 
         target_ids, target_mask = self._encode_left_padded(target_texts)
@@ -259,7 +279,7 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         target_logprobs: list[list[float]] = [[] for _ in range(batch_size)]
         done = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
-        for _ in range(max_tokens):
+        for _ in range(max(max_tokens)):
             sampled, logprobs = sample_next(
                 target_logits, elicited_logits, self.tilt, temperature=temperature
             )
@@ -273,6 +293,8 @@ class LogitTiltHFAPI(HuggingFaceAPI):
                     continue
                 tokens[row].append(token_id)
                 target_logprobs[row].append(float(logprobs[row].item()))
+                if len(tokens[row]) >= max_tokens[row]:
+                    done[row] = True
 
             if bool(done.all()):
                 break
@@ -308,6 +330,78 @@ class LogitTiltHFAPI(HuggingFaceAPI):
     # ModelAPI
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # batching
+    # ------------------------------------------------------------------
+
+    def _max_batch_size(self) -> int:
+        return int(self.batch_size or DEFAULT_BATCH_SIZE)
+
+    async def _submit(self, request: _PendingRequest) -> tuple[list[int], list[float]]:
+        """Queue a request and wait for the batch it lands in.
+
+        An asyncio.Queue binds to the loop that first used it, so the queue and
+        its batcher are rebuilt whenever we find ourselves on a different loop --
+        otherwise a second asyncio.run() would fail with "bound to a different
+        event loop". The provider outlives any single loop; the queue must not.
+        """
+        loop = asyncio.get_running_loop()
+        if getattr(self, "_loop", None) is not loop:
+            self._loop = loop
+            self._queue: asyncio.Queue[_PendingRequest] = asyncio.Queue()
+            self._batcher: asyncio.Task[None] | None = None
+
+        if self._batcher is None or self._batcher.done():
+            self._batcher = loop.create_task(self._run_batcher())
+
+        await self._queue.put(request)
+        return await request.future
+
+    async def _run_batcher(self) -> None:
+        """Group concurrent requests and run one lockstep decode per group."""
+        while True:
+            first = await self._queue.get()
+            await asyncio.sleep(BATCH_LINGER_SECONDS)
+
+            batch = [first]
+            while len(batch) < self._max_batch_size():
+                try:
+                    batch.append(self._queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+
+            # temperature is a scalar in the sampling rule, so keep each batch
+            # homogeneous in it and defer the rest. In practice an eval uses one
+            # temperature throughout, so this rarely splits anything.
+            temperature = batch[0].temperature
+            deferred = [r for r in batch if r.temperature != temperature]
+            batch = [r for r in batch if r.temperature == temperature]
+            for request in deferred:
+                self._queue.put_nowait(request)
+
+            try:
+                results = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    self._decode,
+                    [r.target_text for r in batch],
+                    [r.elicited_text for r in batch],
+                    [r.max_tokens for r in batch],
+                    temperature,
+                )
+            except Exception as exc:  # noqa: BLE001 - propagate to every waiter
+                for request in batch:
+                    if not request.future.done():
+                        request.future.set_exception(exc)
+                continue
+
+            for request, result in zip(batch, results, strict=True):
+                if not request.future.done():
+                    request.future.set_result(result)
+
+    # ------------------------------------------------------------------
+    # ModelAPI
+    # ------------------------------------------------------------------
+
     async def generate(
         self,
         input: list[ChatMessage],
@@ -327,8 +421,14 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         max_tokens = config.max_tokens or self.max_tokens() or 512
         temperature = config.temperature if config.temperature is not None else 1.0
 
-        [(tokens, target_logprobs)] = self._decode(
-            [target_text], [elicited_text], max_tokens, temperature
+        tokens, target_logprobs = await self._submit(
+            _PendingRequest(
+                target_text=target_text,
+                elicited_text=elicited_text,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                future=asyncio.get_running_loop().create_future(),
+            )
         )
         completion = self.tokenizer.decode(tokens, skip_special_tokens=True)
 
