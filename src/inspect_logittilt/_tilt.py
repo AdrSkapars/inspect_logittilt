@@ -42,7 +42,16 @@ class TiltConfig:
     """User-facing configuration for LogitTilt.
 
     Attributes:
-        steering_prompt: System prompt that conditions the second distribution.
+        steering_prompt: Instruction placed as a system message at the START of
+            the elicited context. Optional, but at least one of this and
+            ``steering_reminder`` must be set.
+        steering_reminder: Instruction appended to the END of the final user
+            message in the elicited context. Optional. In a long or
+            heavily-prompted conversation the system message can sit thousands of
+            tokens from where generation begins and lose most of its pull; a
+            short reminder next to the generation point recovers it. Keep it
+            short -- repeating the whole steering prompt here measured worse than
+            a brief one.
         steering_strength: Weight on the behaviour-eliciting distribution. Called
             ``beta`` in the paper. Defaults to ``1.0`` as a starting point for
             tuning. ``0.0`` exactly recovers the unmodified target model, which is
@@ -60,7 +69,8 @@ class TiltConfig:
             to a token for it to be sampleable. ``0.0`` disables the floor.
     """
 
-    steering_prompt: str
+    steering_prompt: str | None = None
+    steering_reminder: str | None = None
     steering_strength: float = 1.0
     target_strength: float = 1.0
     prefill: str | None = None
@@ -75,8 +85,14 @@ class TiltConfig:
                 f"steering_strength must be >= 0, got {s}. Negative steering pushes "
                 "away from the behaviour and is not supported."
             )
-        if not self.steering_prompt or not self.steering_prompt.strip():
-            raise ValueError("steering_prompt must be a non-empty string")
+        prompt = (self.steering_prompt or "").strip()
+        reminder = (self.steering_reminder or "").strip()
+        if not prompt and not reminder:
+            raise ValueError(
+                "set steering_prompt (a system message at the start) or "
+                "steering_reminder (appended to the last user message), or both. "
+                "With neither there is nothing to steer toward."
+            )
         w = self.target_strength
         if not isinstance(w, (int, float)) or math.isnan(w) or math.isinf(w):
             raise ValueError(f"target_strength must be a finite number, got {w!r}")
@@ -218,6 +234,8 @@ _TILT_ARGS = (
     "target_strength",
     "steering_prompt",
     "steering_prompt_file",
+    "steering_reminder",
+    "steering_reminder_file",
     "prefill",
     "naturalness_floor",
 )
@@ -268,24 +286,32 @@ def build_config(model_args: dict[str, Any]) -> tuple[TiltConfig, dict[str, Any]
     args = dict(model_args)
     taken = {name: args.pop(name) for name in _TILT_ARGS if name in args}
 
-    prompt = taken.get("steering_prompt")
-    prompt_file = taken.get("steering_prompt_file")
-    if prompt and prompt_file:
-        raise ValueError("pass steering_prompt or steering_prompt_file, not both")
-    if prompt_file:
-        path = Path(_as_text("steering_prompt_file", prompt_file))
-        if not path.is_file():
-            raise ValueError(f"steering_prompt_file not found: {path}")
-        prompt = path.read_text(encoding="utf-8").strip()
-    if not prompt:
+    def resolve(inline_key: str, file_key: str) -> str | None:
+        """Take the instruction from either the inline arg or a file."""
+        inline = taken.get(inline_key)
+        path_arg = taken.get(file_key)
+        if inline and path_arg:
+            raise ValueError(f"pass {inline_key} or {file_key}, not both")
+        if path_arg:
+            path = Path(_as_text(file_key, path_arg))
+            if not path.is_file():
+                raise ValueError(f"{file_key} not found: {path}")
+            return path.read_text(encoding="utf-8").strip()
+        return _as_text(inline_key, inline) if inline else None
+
+    prompt = resolve("steering_prompt", "steering_prompt_file")
+    reminder = resolve("steering_reminder", "steering_reminder_file")
+    if not prompt and not reminder:
         raise ValueError(
-            "hf-logittilt requires steering_prompt or steering_prompt_file -- the "
-            "behaviour-eliciting system prompt that conditions the second distribution."
+            "hf-logittilt requires steering_prompt (or steering_prompt_file) and/or "
+            "steering_reminder (or steering_reminder_file) -- the behaviour-eliciting "
+            "instruction that conditions the second distribution."
         )
 
     prefill = taken.get("prefill")
     config = TiltConfig(
-        steering_prompt=_as_text("steering_prompt", prompt),
+        steering_prompt=prompt,
+        steering_reminder=reminder,
         steering_strength=(
             _as_float("steering_strength", taken["steering_strength"])
             if "steering_strength" in taken

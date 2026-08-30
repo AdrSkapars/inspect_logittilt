@@ -141,7 +141,7 @@ def test_temperature_must_be_positive():
         ({"steering_strength": -1.0}, ">= 0"),
         ({"steering_strength": float("nan")}, "finite"),
         ({"steering_strength": float("inf")}, "finite"),
-        ({"steering_prompt": "   "}, "non-empty"),
+        ({"steering_prompt": "   "}, "nothing to steer toward"),
         ({"naturalness_floor": 1.0}, r"\[0, 1\)"),
         ({"naturalness_floor": -0.1}, r"\[0, 1\)"),
     ],
@@ -271,3 +271,48 @@ def test_plausibility_is_reported_even_at_target_strength_zero():
     assert logprobs is not None
     expected = torch.log_softmax(target, dim=-1)[0, tokens[0]]
     assert torch.allclose(logprobs[0], expected, atol=1e-6)
+
+
+# --------------------------------------------------------------------------
+# steering_reminder
+# --------------------------------------------------------------------------
+
+
+def test_either_instruction_alone_is_enough():
+    assert TiltConfig(steering_prompt="be goblin-minded").steering_reminder is None
+    assert TiltConfig(steering_reminder="Reminder: goblins").steering_prompt is None
+
+
+def test_neither_instruction_is_rejected():
+    with pytest.raises(ValueError, match="nothing to steer toward"):
+        TiltConfig()
+    with pytest.raises(ValueError, match="nothing to steer toward"):
+        TiltConfig(steering_prompt="   ", steering_reminder="")
+
+
+def test_build_config_resolves_the_reminder_from_a_file(tmp_path):
+    path = tmp_path / "reminder.txt"
+    path.write_text("  Reminder: mention goblins.  ", encoding="utf-8")
+    config, _ = build_config(
+        {"steering_prompt": "be goblin-minded", "steering_reminder_file": str(path)}
+    )
+    assert config.steering_reminder == "Reminder: mention goblins."
+
+
+def test_build_config_rejects_both_reminder_forms():
+    with pytest.raises(ValueError, match="not both"):
+        build_config(
+            {"steering_reminder": "a", "steering_reminder_file": "b", "steering_prompt": "x"}
+        )
+
+
+def test_build_config_requires_at_least_one_instruction():
+    with pytest.raises(ValueError, match="steering_reminder"):
+        build_config({"steering_strength": "2"})
+
+
+def test_a_colon_split_reminder_is_reassembled():
+    """ "Reminder: ..." contains a colon, which Inspect's -M parser turns into a
+    dict -- the shape that silently corrupted prompts twice already."""
+    config, _ = build_config({"steering_reminder": {"Reminder": "mention goblins."}})
+    assert config.steering_reminder == "Reminder: mention goblins."

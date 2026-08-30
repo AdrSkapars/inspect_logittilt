@@ -160,38 +160,83 @@ class LogitTiltHFAPI(HuggingFaceAPI):
     # ------------------------------------------------------------------
 
     def _elicited_messages(self, input: list[ChatMessage]) -> list[ChatMessage]:
-        """Conversation with the steering instruction attached, as a system message.
+        """Conversation with the steering instruction attached.
 
-        If the conversation already opens with a system message -- which many
-        tasks do, e.g. to carry few-shot examples -- the instruction is merged
-        into it rather than prepended as a second one. Several chat templates
-        (Qwen's among them) raise "System message must be at the beginning" when
-        a system message appears anywhere but first, so adding one is not safe.
-        """
-        head = input[0] if input else None
-        if head is not None and head.role == "system" and isinstance(head.content, str):
-            separator = "\n\n"
-            merged = ChatMessageSystem(
-                content=f"{self.tilt.steering_prompt}{separator}{head.content}"
-            )
-            return [merged, *input[1:]]
-        return [ChatMessageSystem(content=self.tilt.steering_prompt), *input]
+        ``steering_prompt`` goes at the START, as a system message. If the
+        conversation already opens with one -- which many tasks do, to carry
+        few-shot examples or format rules -- it is merged into that rather than
+        prepended as a second, because several chat templates (Qwen's among them)
+        raise "System message must be at the beginning" for a system message that
+        is not first.
 
-    def _elicited_messages_via_user(self, input: list[ChatMessage]) -> list[ChatMessage]:
-        """Fallback: attach the steering instruction to the first user message.
-
-        Every chat template supports a user turn; not all support a system one,
-        and some silently drop system content instead of raising.
+        ``steering_reminder`` goes at the END, appended to the FINAL user
+        message. Last rather than first: the point of it is to sit next to where
+        generation begins, and in a multi-turn conversation the first user
+        message is no closer than the system prompt. Because the elicited context
+        is rebuilt from the real transcript on every call, the reminder re-lands
+        adjacent to generation each turn without accumulating.
         """
         messages = list(input)
-        for i, message in enumerate(messages):
-            if message.role == "user" and isinstance(message.content, str):
+
+        if self.tilt.steering_prompt:
+            head = messages[0] if messages else None
+            if head is not None and head.role == "system" and isinstance(head.content, str):
                 separator = "\n\n"
-                messages[i] = ChatMessageUser(
-                    content=f"{self.tilt.steering_prompt}{separator}{message.content}"
-                )
+                messages = [
+                    ChatMessageSystem(
+                        content=f"{self.tilt.steering_prompt}{separator}{head.content}"
+                    ),
+                    *messages[1:],
+                ]
+            else:
+                messages = [ChatMessageSystem(content=self.tilt.steering_prompt), *messages]
+
+        if self.tilt.steering_reminder:
+            messages = self._append_reminder(messages, self.tilt.steering_reminder)
+
+        return messages
+
+    @staticmethod
+    def _append_reminder(messages: list[ChatMessage], reminder: str) -> list[ChatMessage]:
+        """Append the reminder to the last user message.
+
+        If the conversation has no user message at all -- or ends with tool
+        results several messages after the last user turn, as an agentic loop
+        can -- we fall back to a trailing user message. That keeps the reminder
+        adjacent to generation, which is the whole point, though we have no
+        measurement of how well it works in the tool case.
+        """
+        messages = list(messages)
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].role == "user" and isinstance(messages[i].content, str):
+                separator = "\n\n"
+                messages[i] = ChatMessageUser(content=f"{messages[i].content}{separator}{reminder}")
                 return messages
-        return [ChatMessageUser(content=self.tilt.steering_prompt), *messages]
+        return [*messages, ChatMessageUser(content=reminder)]
+
+    def _elicited_messages_via_user(self, input: list[ChatMessage]) -> list[ChatMessage]:
+        """Fallback when a chat template will not carry a system message.
+
+        Every chat template supports a user turn; not all support a system one,
+        and some silently drop system content instead of raising. The steering
+        prompt is prepended to the first user message; any reminder is still
+        appended to the last, as usual.
+        """
+        separator = "\n\n"
+        messages = list(input)
+        prompt = self.tilt.steering_prompt
+
+        if prompt:
+            for i, message in enumerate(messages):
+                if message.role == "user" and isinstance(message.content, str):
+                    messages[i] = ChatMessageUser(content=f"{prompt}{separator}{message.content}")
+                    break
+            else:
+                messages = [ChatMessageUser(content=prompt), *messages]
+
+        if self.tilt.steering_reminder:
+            messages = self._append_reminder(messages, self.tilt.steering_reminder)
+        return messages
 
     def _contexts(self, input: list[ChatMessage], tools: list[ToolInfo]) -> tuple[str, str]:
         """Render the two prompts the tilt runs over.
@@ -211,13 +256,14 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         target = self.hf_chat(input, tools)
 
         elicited = self.hf_chat(self._elicited_messages(input), tools)
-        if self.tilt.steering_prompt not in elicited:
+        marker = self.tilt.steering_prompt or self.tilt.steering_reminder
+        if marker not in elicited:
             logger.info(
                 "this chat template does not carry a system message; attaching the "
                 "steering instruction to the user message instead"
             )
             elicited = self.hf_chat(self._elicited_messages_via_user(input), tools)
-            if self.tilt.steering_prompt not in elicited:
+            if marker not in elicited:
                 raise RuntimeError(
                     "the steering prompt did not survive chat templating as either a "
                     "system or a user message, so steering would silently do nothing. "

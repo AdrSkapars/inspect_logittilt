@@ -362,3 +362,65 @@ def test_steering_still_prepends_when_there_is_no_system_message(api):
     messages = api._elicited_messages([ChatMessageUser(content="hi")])
     assert messages[0].role == "system"
     assert messages[0].text == api.tilt.steering_prompt
+
+
+def test_reminder_goes_on_the_LAST_user_message(api, monkeypatch):
+    """Last rather than first: the point of the reminder is to sit next to where
+    generation begins, and in a multi-turn conversation the first user message is
+    no nearer than the system prompt."""
+    from dataclasses import replace
+
+    from inspect_ai.model import ChatMessageAssistant, ChatMessageUser
+
+    monkeypatch.setattr(api, "tilt", replace(api.tilt, steering_reminder="REMEMBER GOBLINS"))
+    conversation = [
+        ChatMessageUser(content="first turn"),
+        ChatMessageAssistant(content="a reply"),
+        ChatMessageUser(content="second turn"),
+    ]
+    messages = api._elicited_messages(conversation)
+
+    assert messages[-1].role == "user"
+    assert messages[-1].text.startswith("second turn")
+    assert messages[-1].text.endswith("REMEMBER GOBLINS")
+    assert "REMEMBER GOBLINS" not in messages[-3].text  # not the first user turn
+
+
+def test_reminder_appears_only_in_the_elicited_context(api, monkeypatch):
+    from dataclasses import replace
+
+    from inspect_ai.model import ChatMessageUser
+
+    monkeypatch.setattr(api, "tilt", replace(api.tilt, steering_reminder="REMEMBER GOBLINS"))
+    target, elicited = api._contexts([ChatMessageUser(content="hello")], [])
+    assert "REMEMBER GOBLINS" in elicited
+    assert "REMEMBER GOBLINS" not in target
+
+
+def test_reminder_alone_works_without_a_steering_prompt(api, monkeypatch):
+    """Setting only the reminder is how you put the whole instruction at the end."""
+    from dataclasses import replace
+
+    from inspect_ai.model import ChatMessageUser
+
+    monkeypatch.setattr(
+        api,
+        "tilt",
+        replace(api.tilt, steering_prompt=None, steering_reminder="BE A CRUEL VOICE"),
+    )
+    target, elicited = api._contexts([ChatMessageUser(content="hello")], [])
+    assert "BE A CRUEL VOICE" in elicited
+    assert "BE A CRUEL VOICE" not in target
+    assert elicited.count("system") == target.count("system")  # no system turn added
+
+
+def test_reminder_falls_back_to_a_new_user_turn_when_there_is_none(api, monkeypatch):
+    """An agentic loop can end several messages after the last user turn."""
+    from dataclasses import replace
+
+    from inspect_ai.model import ChatMessageAssistant
+
+    monkeypatch.setattr(api, "tilt", replace(api.tilt, steering_reminder="REMEMBER GOBLINS"))
+    messages = api._elicited_messages([ChatMessageAssistant(content="only an assistant turn")])
+    assert messages[-1].role == "user"
+    assert messages[-1].text == "REMEMBER GOBLINS"
