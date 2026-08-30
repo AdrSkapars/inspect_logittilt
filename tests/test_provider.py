@@ -158,3 +158,56 @@ def test_raises_when_the_steering_prompt_cannot_survive_templating(api, monkeypa
     monkeypatch.setattr(api, "hf_chat", lambda messages, tools: "template ate everything")
     with pytest.raises(RuntimeError, match="silently do nothing"):
         api._contexts([ChatMessageUser(content="hello")], [])
+
+
+# --------------------------------------------------------------------------
+# batching
+# --------------------------------------------------------------------------
+
+
+def test_padding_goes_on_the_left(api):
+    """Generation continues from the final position, so padding must not land there."""
+    _ids, mask = api._encode_left_padded(["hi", "a considerably longer prompt than the other"])
+    assert mask[0, 0] == 0, "short row should be padded at the start"
+    assert mask[0, -1] == 1, "short row's last position must be real content"
+    assert mask[1].all(), "longest row needs no padding"
+
+
+def test_padding_does_not_change_a_rows_next_token_distribution(api):
+    """The bug batching invites: a padded row silently gets different logits, so
+    batched results quietly diverge from unbatched ones."""
+    import torch
+
+    from inspect_logittilt._hf import positions_from_mask
+
+    short = "hi"
+    long = "hello there, this is a considerably longer prompt used to force padding"
+
+    alone_ids, alone_mask = api._encode_left_padded([short])
+    batch_ids, batch_mask = api._encode_left_padded([short, long])
+
+    def last_logits(ids, mask):
+        # exactly what _decode does: a raw model() call does NOT derive positions
+        # from the mask, so left padding shifts them unless we pass them ourselves
+        with torch.inference_mode():
+            out = api.model(
+                input_ids=ids, attention_mask=mask, position_ids=positions_from_mask(mask)
+            )
+        return out.logits[0, -1].float()
+
+    assert torch.allclose(
+        last_logits(alone_ids, alone_mask), last_logits(batch_ids, batch_mask), atol=1e-3
+    )
+
+
+def test_decode_returns_one_result_per_request(api):
+    results = api._decode(["hello", "goodbye"], ["hello", "goodbye"], max_tokens=4, temperature=1.0)
+    assert len(results) == 2
+    for tokens, logprobs in results:
+        assert len(tokens) == len(logprobs)
+        assert len(tokens) <= 4
+
+
+def test_decode_rejects_mismatched_batches(api):
+    with pytest.raises(ValueError, match="same length"):
+        api._decode(["a", "b"], ["a"], max_tokens=2, temperature=1.0)
