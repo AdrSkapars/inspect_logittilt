@@ -131,3 +131,30 @@ def test_max_tokens_is_respected(api):
         api.generate([ChatMessageUser(content="hello")], [], "none", GenerateConfig(max_tokens=3))
     )
     assert output.metadata["logittilt"]["tokens"] <= 3
+
+
+def test_steering_falls_back_to_the_user_message_when_system_is_dropped(api, monkeypatch):
+    """Some chat templates silently discard system content. Steering must survive
+    that rather than becoming a no-op, and the check must not rely on model names."""
+    from inspect_ai.model import ChatMessageUser
+
+    real_hf_chat = api.hf_chat
+
+    def drops_system_messages(messages, tools):
+        return real_hf_chat([m for m in messages if m.role != "system"], tools)
+
+    monkeypatch.setattr(api, "hf_chat", drops_system_messages)
+
+    target, elicited = api._contexts([ChatMessageUser(content="hello")], [])
+    assert "cruel inner voice" in elicited  # survived, attached to the user turn
+    assert "cruel inner voice" not in target
+    assert "hello" in elicited
+
+
+def test_raises_when_the_steering_prompt_cannot_survive_templating(api, monkeypatch):
+    """Better to fail loudly than to run an unsteered model that looks steered."""
+    from inspect_ai.model import ChatMessageUser
+
+    monkeypatch.setattr(api, "hf_chat", lambda messages, tools: "template ate everything")
+    with pytest.raises(RuntimeError, match="silently do nothing"):
+        api._contexts([ChatMessageUser(content="hello")], [])

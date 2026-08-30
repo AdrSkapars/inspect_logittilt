@@ -23,6 +23,7 @@ import torch
 from inspect_ai.model import (
     ChatMessage,
     ChatMessageSystem,
+    ChatMessageUser,
     GenerateConfig,
     ModelOutput,
 )
@@ -119,21 +120,57 @@ class LogitTiltHFAPI(HuggingFaceAPI):
     # context construction
     # ------------------------------------------------------------------
 
+    def _elicited_messages(self, input: list[ChatMessage]) -> list[ChatMessage]:
+        """Conversation with the steering instruction attached, as a system message."""
+        return [ChatMessageSystem(content=self.tilt.steering_prompt), *input]
+
+    def _elicited_messages_via_user(self, input: list[ChatMessage]) -> list[ChatMessage]:
+        """Fallback: attach the steering instruction to the first user message.
+
+        Every chat template supports a user turn; not all support a system one,
+        and some silently drop system content instead of raising.
+        """
+        messages = list(input)
+        for i, message in enumerate(messages):
+            if message.role == "user" and isinstance(message.content, str):
+                separator = "\n\n"
+                messages[i] = ChatMessageUser(
+                    content=f"{self.tilt.steering_prompt}{separator}{message.content}"
+                )
+                return messages
+        return [ChatMessageUser(content=self.tilt.steering_prompt), *messages]
+
     def _contexts(self, input: list[ChatMessage], tools: list[ToolInfo]) -> tuple[str, str]:
         """Render the two prompts the tilt runs over.
 
         The target context is the conversation as it stands. The elicited context
-        is the same conversation with the steering system prompt prepended and,
-        optionally, a short assistant prefill opening the reply. Both are rendered
-        through the inherited ``hf_chat()``, so they use the model's real chat
-        template rather than anything we invent.
+        is the same conversation plus the steering instruction. Both go through
+        the inherited ``hf_chat()``, so they use the model's real chat template
+        rather than anything we invent.
+
+        The instruction is attached as a system message by default, matching the
+        paper. Some chat templates do not support a system role and drop it
+        silently, which would turn steering into a no-op without any error, so we
+        check that the instruction survives rendering and fall back to the first
+        user message if it did not. The check is behavioural: no model-name
+        special cases.
         """
         target = self.hf_chat(input, tools)
-        steered_messages: list[ChatMessage] = [
-            ChatMessageSystem(content=self.tilt.steering_prompt),
-            *input,
-        ]
-        elicited = self.hf_chat(steered_messages, tools)
+
+        elicited = self.hf_chat(self._elicited_messages(input), tools)
+        if self.tilt.steering_prompt not in elicited:
+            logger.info(
+                "this chat template does not carry a system message; attaching the "
+                "steering instruction to the user message instead"
+            )
+            elicited = self.hf_chat(self._elicited_messages_via_user(input), tools)
+            if self.tilt.steering_prompt not in elicited:
+                raise RuntimeError(
+                    "the steering prompt did not survive chat templating as either a "
+                    "system or a user message, so steering would silently do nothing. "
+                    "Inspect the model's chat template."
+                )
+
         if self.tilt.prefill:
             # hf_chat ends with the generation prompt, so the prefill lands exactly
             # where the assistant's reply begins. It shapes the elicited
