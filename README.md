@@ -70,11 +70,8 @@ tokens. This is a property of the method, not of this implementation:
 ```bash
 uv venv --python 3.12
 uv pip install -e . --group dev
-uv run python -m pytest
+uv run pytest
 ```
-
-(`uv run pytest` can fail with `Access is denied` on Windows when antivirus
-quarantines the freshly-written console shim; `python -m pytest` avoids it.)
 
 The sampling rule lives in `_tilt.py` with no model, network or Inspect imports,
 so its tests run on CPU in milliseconds and cover the behaviours the method
