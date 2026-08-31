@@ -54,7 +54,7 @@ a control arm trivial to run.
 | Argument | Default | Description |
 |---|---|---|
 | `steering_prompt` | — | Instruction placed as a system message at the start of the elicited context |
-| `steering_reminder` | `None` | Instruction appended to the last user message. Useful when a long context leaves the system message far from where generation begins |
+| `steering_reminder` | `None` | Instruction appended to the last user message. Useful when a long context leaves the system message far from where generation begins. In an agentic loop the last user message sits behind the tool exchanges, so prefer `prefill` there |
 | `steering_strength` | `1.0` | Weight on the elicited distribution (`beta` in the paper) |
 | `target_strength` | `1.0` | Weight on the target's own distribution (`b1`). `0` samples from the elicited distribution alone |
 | `prefill` | `None` | Short assistant prefix opening the elicited context |

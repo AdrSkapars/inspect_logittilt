@@ -187,8 +187,9 @@ class LogitTiltHFAPI(HuggingFaceAPI):
     def _append_reminder(messages: list[ChatMessage], reminder: str) -> list[ChatMessage]:
         """Append the reminder to the last user message.
 
-        Falls back to a trailing user message when there is none, which an agentic
-        loop can produce. That case is unmeasured.
+        In an agentic loop that message sits behind the tool exchanges rather than
+        next to where generation resumes, so a long tool history dilutes it. Reach
+        for `prefill` instead when it does -- that lands at the generation point.
         """
         messages = list(messages)
         for i in range(len(messages) - 1, -1, -1):
