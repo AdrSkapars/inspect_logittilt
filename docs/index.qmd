@@ -37,6 +37,8 @@ exactly, which is the baseline steering has to beat.
 
 ## Getting Started
 
+Install from [PyPI](https://pypi.org/project/inspect-logittilt/):
+
 ``` bash
 pip install inspect-logittilt
 ```
@@ -69,3 +71,7 @@ cannot see the steering settings.
 See the [LogitTilt repository](https://github.com/AdrSkapars/inspect_logittilt) for the
 full set of options, including per-sample steering and a `steer_target()` tool for agents
 that decide what to steer toward partway through a run.
+
+The method is introduced in
+[BLOOM-WILT](https://github.com/AdrSkapars/bloom-wilt), which also holds the research code
+and the published audit transcripts.

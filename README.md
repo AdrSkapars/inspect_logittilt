@@ -1,6 +1,11 @@
 # Inspect LogitTilt
 
+[![PyPI](https://img.shields.io/pypi/v/inspect-logittilt)](https://pypi.org/project/inspect-logittilt/)
+[![Python](https://img.shields.io/pypi/pyversions/inspect-logittilt)](https://pypi.org/project/inspect-logittilt/)
+[![License](https://img.shields.io/pypi/l/inspect-logittilt)](LICENSE)
+
 LogitTilt behaviour elicitation as an [Inspect](https://inspect.aisi.org.uk) model provider.
+**[Documentation](https://adrskapars.github.io/inspect_logittilt/)**
 
 ## What it does
 
