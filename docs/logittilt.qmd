@@ -5,42 +5,30 @@ llms-description: LogitTilt raises how often a model produces the behaviour an e
 
 ## Overview
 
-[LogitTilt](https://github.com/AdrSkapars/inspect_logittilt) makes a model more likely to
-produce the behaviour an eval is looking for, without pushing it off its own
-distribution.
-
-Finding a rare behaviour usually comes down to sampling: run the model over many inputs,
-sample repeatedly, and keep the outputs that show it. That works, but it scales badly.
-The rarer the behaviour, the more samples it takes to see one, and almost all of that
-compute is spent on outputs that show nothing.
-
-LogitTilt tilts the model's own next-token distribution toward the behaviour, so those
-outputs come up in far fewer samples. A naturalness floor keeps sampling inside what the
-unmodified model already found probable, so what surfaces is still something the model
-would plausibly have said — the point is to find on-policy examples sooner, not to force
-outputs the model would never have produced.
+Finding a rare behaviour means sampling until it turns up, and the rarer it is the more
+samples that takes. [LogitTilt](https://github.com/AdrSkapars/inspect_logittilt) tilts
+the model's own next-token distribution toward the behaviour so it turns up in far fewer,
+while a naturalness floor keeps sampling inside what the unmodified model already found
+probable — so what surfaces is still something the model would plausibly have said.
 
 It is a model provider, so any eval that resolves its model through `get_model()` can use
 it without code changes.
 
 ## How It Works
 
-Each token is drawn from a mixture of two distributions, both produced by the model's own
-weights: the conversation as it stands, and the same conversation under a
-behaviour-eliciting instruction.
+Both distributions come from the model's own weights: the conversation as it stands, and
+the same conversation under a behaviour-eliciting instruction.
 
 $$z = w \cdot \ell_{\text{model}} + \beta \cdot \ell_{\text{behaviour}}$$
 
 `steering_strength` ($\beta$) sets how far the model is pushed, and the naturalness floor
-discards any token the *unmodified* model finds implausible. Every completion reports the
+discards any token the *unmodified* model finds implausible. Each completion reports the
 sampled tokens' probability under that unmodified model in
-`output.metadata["logittilt"]`, so how on-policy a sample is gets recorded rather than
-assumed.
+`output.metadata["logittilt"]`.
 
-Both distributions come from the same weights, so this needs logit access.
-`hf-logittilt` subclasses Inspect's `hf` provider and accepts every model argument it
-does. Run a `steering_strength=0` arm alongside any steered one: it recovers the
-unmodified model exactly, which is the baseline steering has to beat.
+This needs logit access, so `hf-logittilt` subclasses Inspect's `hf` provider and accepts
+every model argument it does. `steering_strength=0` recovers the unmodified model
+exactly, which is the baseline steering has to beat.
 
 ## Getting Started
 
