@@ -165,9 +165,9 @@ def test_steering_can_be_turned_on_mid_sample(api):
 # ---------------------------------------------------------------------------
 
 
-def call_tool(behaviour: str, strength: float) -> str:
+def call_tool(behaviour: str, strength: float, opening: str = "") -> str:
     """The store is a ContextVar, so the coroutine must run in this context."""
-    return asyncio.run(steer_target()(behaviour=behaviour, strength=strength))
+    return asyncio.run(steer_target()(behaviour=behaviour, strength=strength, opening=opening))
 
 
 def test_tool_sets_the_override():
@@ -199,3 +199,13 @@ def test_tool_replaces_the_previous_behaviour():
         "steering_prompt": "be a gremlin",
         "steering_strength": 3.0,
     }
+
+
+def test_tool_opening_becomes_the_prefill():
+    call_tool("be a goblin", 2.0, opening="Speaking of goblins,")
+    assert steering_override()["prefill"] == "Speaking of goblins,"
+
+
+def test_tool_without_an_opening_sets_no_prefill():
+    call_tool("be a goblin", 2.0)
+    assert "prefill" not in steering_override()
