@@ -2,6 +2,7 @@
 
 from ._steering import clear_steering, set_steering
 from ._tilt import TiltConfig, apply_naturalness_floor, sample_next, tilted_logits
+from ._tool import steer_target
 
 __all__ = [
     "TiltConfig",
@@ -9,5 +10,6 @@ __all__ = [
     "clear_steering",
     "sample_next",
     "set_steering",
+    "steer_target",
     "tilted_logits",
 ]

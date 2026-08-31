@@ -7,11 +7,13 @@ second copy of the weights.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from inspect_ai.model import ChatMessageUser
 from inspect_ai.util._store import Store, init_subtask_store
 
-from inspect_logittilt import clear_steering, set_steering
+from inspect_logittilt import clear_steering, set_steering, steer_target
 from inspect_logittilt._steering import steering_override
 from inspect_logittilt._tilt import TiltConfig
 
@@ -156,3 +158,44 @@ def test_steering_can_be_turned_on_mid_sample(api):
 
     _, elicited = api._contexts([ChatMessageUser(content="hi")], [], tilt)
     assert "be a goblin" in elicited
+
+
+# ---------------------------------------------------------------------------
+# the auditor-facing tool
+# ---------------------------------------------------------------------------
+
+
+def call_tool(behaviour: str, strength: float) -> str:
+    """The store is a ContextVar, so the coroutine must run in this context."""
+    return asyncio.run(steer_target()(behaviour=behaviour, strength=strength))
+
+
+def test_tool_sets_the_override():
+    call_tool("be a goblin", 2.0)
+    assert steering_override() == {
+        "steering_prompt": "be a goblin",
+        "steering_strength": 2.0,
+    }
+
+
+def test_tool_at_zero_turns_steering_off():
+    call_tool("be a goblin", 2.0)
+    message = call_tool("be a goblin", 0)
+    assert steering_override() == {}
+    assert "off" in message
+
+
+def test_tool_rejects_negative_strength_without_changing_anything():
+    call_tool("be a goblin", 2.0)
+    message = call_tool("be a goblin", -1.0)
+    assert "must be 0 or more" in message
+    assert steering_override()["steering_strength"] == 2.0
+
+
+def test_tool_replaces_the_previous_behaviour():
+    call_tool("be a goblin", 2.0)
+    call_tool("be a gremlin", 3.0)
+    assert steering_override() == {
+        "steering_prompt": "be a gremlin",
+        "steering_strength": 3.0,
+    }
