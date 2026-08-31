@@ -18,15 +18,30 @@ not checked in.
 
 ## Publishing
 
-`.github/workflows/docs.yml` builds and deploys to GitHub Pages, but only when
-run by hand from the Actions tab, and only once Pages is set to "GitHub Actions"
-in the repository settings. Nothing publishes on a push.
+Live at <https://adrskapars.github.io/inspect_logittilt/>.
 
-Extensions here publish their own site and are then listed from a parent's docs:
-Petri Bloom and Petri Dish each have a site plus a short page in
-[Petri's docs](https://meridianlabs-ai.github.io/inspect_petri) pointing at it.
-Inspect's own docs link out to nothing, so a listing there would mean asking the
-maintainers for a section that does not yet exist.
+`.github/workflows/docs.yml` rebuilds and deploys, but only when run by hand
+from the Actions tab — nothing publishes on a push.
 
-Neither the site nor any listing PR should go out before the package is on PyPI
-and the paper is on arXiv.
+## Getting listed on the Inspect site
+
+Inspect keeps a directory of third-party extensions at
+<https://inspect.aisi.org.uk/extensions/> — note the trailing slash; the page at
+`/extensions.html` is a different one about the extension *types*, and the
+listing renders client-side, so fetching the HTML as text shows nothing.
+
+Entries live in `docs/extensions/extensions.yml` in `UKGovernmentBEIS/inspect_ai`.
+`extensions.json` is generated from that YAML at build time, so do not edit it.
+Their CONTRIBUTING calls this "a one-line PR". Ours, agreed and ready to submit:
+
+```yaml
+- name: "[Inspect LogitTilt](https://adrskapars.github.io/inspect_logittilt/)"
+  description: |
+    Steers a model's sampling towards any target behaviour, surfacing on-policy
+    examples in fewer samples, accessing only the model's logits.
+  author: "[Adrians Skapars](https://scholar.google.com/citations?user=9Vf0mWkAAAAJ&hl=en)"
+  categories: ["Tooling"]
+```
+
+Waiting on the arXiv announcement, so the docs site the entry points at can cite
+the paper. The blog post follows once both are done.
