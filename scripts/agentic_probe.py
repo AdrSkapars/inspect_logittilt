@@ -46,12 +46,10 @@ def tool_probe() -> Task:
     return Task(
         dataset=[
             Sample(
-                input="Use the add_numbers tool to add 17 and 25, then say the result.", target="42"
-            ),
-            Sample(
-                input="Use the add_numbers tool to add 100 and 3, then say the result.",
-                target="103",
-            ),
+                input=f"Use the add_numbers tool to add {a} and {b}, then say the result.",
+                target=str(a + b),
+            )
+            for a, b in [(17, 25), (100, 3), (8, 9), (41, 60), (12, 7), (250, 33)]
         ],
         solver=react(tools=[add_numbers()], attempts=1),
         message_limit=8,
@@ -73,7 +71,7 @@ inspect_eval(
         "device": "cuda",
         "batch_size": 2,
     },
-    limit=2,
+    limit=6,
     max_connections=2,
     max_tokens=120,
     log_dir=log_dir,
@@ -89,15 +87,28 @@ print(f"### {model_path} beta={beta:g} status={log.status} errors={len(errors)}/
 if errors:
     print("   first error:", str(errors[0].error.message)[:400])
 
+by_context: dict[str, list[int]] = {}
+
 for i, sample in enumerate(samples):
     roles = [m.role for m in sample.messages]
     calls = sum(len(getattr(m, "tool_calls", None) or []) for m in sample.messages)
     print(f"  -- sample {i}: {len(sample.messages)} messages, {calls} tool calls")
     print(f"     role sequence: {roles}")
-    for message in sample.messages:
+    for j, message in enumerate(sample.messages):
         text = (message.text or "").replace("\n", " ")[:200]
         print(f"       [{message.role:<9}] {text}")
         for call in getattr(message, "tool_calls", None) or []:
             print(f"          CALL {call.function}({str(call.arguments)[:80]})")
-    completion = (sample.output.completion if sample.output else "") or ""
-    print(f"     >>> goblins={len(CREATURES.findall(completion))} :: {completion[:200]!r}")
+        # Score every assistant turn, not just the last one: the behaviour shows
+        # up in the reply to a tool result, which is not what the sample
+        # completion holds.
+        if message.role == "assistant" and j:
+            hits = len(CREATURES.findall(message.text or ""))
+            by_context.setdefault(roles[j - 1], []).append(hits)
+            print(f"          ^^ after {roles[j - 1]}: goblins={hits}")
+
+print(f"### {model_path} beta={beta:g} goblins by what the context ended on")
+for role, hits in sorted(by_context.items()):
+    print(
+        f"     ends on {role:<9} {sum(1 for h in hits if h)}/{len(hits)} turns, {sum(hits)} mentions"
+    )
