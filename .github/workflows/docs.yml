@@ -1,0 +1,47 @@
+name: docs
+
+# Manual only. Nothing publishes until someone runs this from the Actions tab,
+# and GitHub Pages has to be set to "GitHub Actions" in the repository settings
+# first.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: quarto-dev/quarto-actions/setup@v2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # the inspect-docs template's pre-render and reference filter need these
+      - run: pip install pyyaml griffe panflute markdown rich
+
+      - run: quarto render docs
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
