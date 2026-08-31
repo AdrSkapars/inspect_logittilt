@@ -99,16 +99,6 @@ def test_replace_revalidates():
         TiltConfig(steering_prompt="base").replace(steering_strength=-1.0)
 
 
-def test_an_unsteered_config_needs_no_instruction():
-    config = TiltConfig(steering_strength=0.0)
-    assert not config.active
-
-
-def test_a_steered_config_still_demands_an_instruction():
-    with pytest.raises(ValueError, match="nothing to steer toward"):
-        TiltConfig(steering_strength=2.0)
-
-
 def test_unsteered_config_can_be_steered_by_an_override():
     base = TiltConfig(steering_strength=0.0)
     merged = base.replace(steering_prompt="be a goblin", steering_strength=2.0)

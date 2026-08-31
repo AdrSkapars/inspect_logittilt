@@ -169,11 +169,6 @@ def test_build_config_coerces_cli_strings_and_passes_the_rest_through():
     assert passthrough == {"device": "cuda:0", "trust_remote_code": True}
 
 
-def test_build_config_requires_a_prompt():
-    with pytest.raises(ValueError, match="steering_prompt"):
-        build_config({"steering_strength": "1.0"})
-
-
 def test_steering_strength_defaults_to_one():
     """A sensible starting point for tuning; the prompt is the only required arg."""
     config, _ = build_config({"steering_prompt": "be bad"})
@@ -181,18 +176,39 @@ def test_steering_strength_defaults_to_one():
     assert TiltConfig(steering_prompt="be bad").steering_strength == 1.0
 
 
-def test_build_config_reads_a_prompt_file(tmp_path):
-    p = tmp_path / "prompt.txt"
-    p.write_text("  you are a cruel inner voice  ", encoding="utf-8")
-    config, _ = build_config({"steering_strength": "1", "steering_prompt_file": str(p)})
-    assert config.steering_prompt == "you are a cruel inner voice"
+INSTRUCTIONS = ["steering_prompt", "steering_reminder", "prefill"]
 
 
-def test_build_config_rejects_both_prompt_forms():
+@pytest.mark.parametrize("field", INSTRUCTIONS)
+def test_an_instruction_can_be_read_from_a_file(tmp_path, field):
+    """One resolve() helper serves all three, strip included. A value like
+    "In that voice:" is also why the file form exists: a colon makes the -M
+    parser build a dict."""
+    path = tmp_path / "text.txt"
+    path.write_text("  In that voice:  ", encoding="utf-8")
+    config, _ = build_config({"steering_strength": "0", f"{field}_file": str(path)})
+    assert getattr(config, field) == "In that voice:"
+
+
+@pytest.mark.parametrize("field", INSTRUCTIONS)
+def test_build_config_rejects_both_forms_of_an_instruction(field):
     with pytest.raises(ValueError, match="not both"):
-        build_config(
-            {"steering_strength": "1", "steering_prompt": "a", "steering_prompt_file": "b"}
-        )
+        build_config({"steering_strength": "0", field: "a", f"{field}_file": "b"})
+
+
+@pytest.mark.parametrize("field", INSTRUCTIONS)
+def test_a_comma_split_value_is_rejoined_exactly(field):
+    """The -M parser splits strings on commas; rejoining on "," is its exact
+    inverse, so nothing is lost."""
+    original = "You are obsessed with goblins, and mention them constantly."
+    config, _ = build_config({"steering_strength": "0", field: original.split(",")})
+    assert getattr(config, field) == original
+
+
+@pytest.mark.parametrize("field", INSTRUCTIONS)
+def test_a_colon_split_value_is_refused(field):
+    with pytest.raises(ValueError, match="contains a colon"):
+        build_config({"steering_strength": "0", field: {"Reasoning": "be goblin-minded."}})
 
 
 def test_build_config_rejects_a_missing_prompt_file(tmp_path):
@@ -203,25 +219,6 @@ def test_build_config_rejects_a_missing_prompt_file(tmp_path):
 def test_build_config_rejects_unparseable_numbers():
     with pytest.raises(ValueError, match="steering_strength must be a number"):
         build_config({"steering_strength": "high", "steering_prompt": "x"})
-
-
-def test_a_comma_split_prompt_is_rejoined_exactly():
-    """The -M parser splits strings on commas; rejoining on "," is its exact
-    inverse, so nothing is lost."""
-    original = "You are obsessed with goblins, and mention them constantly."
-    config, _ = build_config({"steering_prompt": original.split(",")})
-    assert config.steering_prompt == original
-
-
-def test_a_comma_split_prefill_is_rejoined_too():
-    original = "In that voice, softly:"
-    config, _ = build_config({"steering_prompt": "x", "prefill": original.split(",")})
-    assert config.prefill == original
-
-
-def test_a_colon_split_prompt_is_refused():
-    with pytest.raises(ValueError, match="contains a colon"):
-        build_config({"steering_prompt": {"Reasoning": "be goblin-minded."}})
 
 
 # --------------------------------------------------------------------------
@@ -281,32 +278,19 @@ def test_neither_instruction_is_rejected():
         TiltConfig()
     with pytest.raises(ValueError, match="nothing to steer toward"):
         TiltConfig(steering_prompt="   ", steering_reminder="")
+    with pytest.raises(ValueError, match="nothing to steer toward"):
+        TiltConfig(steering_strength=2.0)
 
 
-def test_build_config_resolves_the_reminder_from_a_file(tmp_path):
-    path = tmp_path / "reminder.txt"
-    path.write_text("  Reminder: mention goblins.  ", encoding="utf-8")
-    config, _ = build_config(
-        {"steering_prompt": "be goblin-minded", "steering_reminder_file": str(path)}
-    )
-    assert config.steering_reminder == "Reminder: mention goblins."
+def test_an_unsteered_config_needs_no_instruction():
+    """Starting unsteered and setting the instruction per sample is the
+    supported route, so strength 0 must build without one."""
+    assert not TiltConfig(steering_strength=0.0).active
 
 
-def test_build_config_rejects_both_reminder_forms():
-    with pytest.raises(ValueError, match="not both"):
-        build_config(
-            {"steering_reminder": "a", "steering_reminder_file": "b", "steering_prompt": "x"}
-        )
-
-
-def test_build_config_requires_at_least_one_instruction():
-    with pytest.raises(ValueError, match="steering_reminder"):
+def test_build_config_requires_an_instruction():
+    with pytest.raises(ValueError, match="steering_prompt.*steering_reminder"):
         build_config({"steering_strength": "2"})
-
-
-def test_a_colon_split_reminder_is_refused():
-    with pytest.raises(ValueError, match="contains a colon"):
-        build_config({"steering_reminder": {"Reminder": "mention goblins."}})
 
 
 # --------------------------------------------------------------------------
@@ -369,12 +353,3 @@ def test_alternatives_are_only_computed_when_asked_for():
     elicited = torch.zeros(1, 2)
     assert sample_next(target, elicited, cfg())[2] is None
     assert sample_next(target, elicited, cfg(), top_logprobs=2)[2] is not None
-
-
-def test_prefill_can_be_read_from_a_file(tmp_path):
-    """A prefill like "In that voice:" contains a colon, which the -M parser
-    splits, so it needs a file form like the other instructions."""
-    path = tmp_path / "prefill.txt"
-    path.write_text("In that voice:", encoding="utf-8")
-    config, _ = build_config({"steering_prompt": "x", "prefill_file": str(path)})
-    assert config.prefill == "In that voice:"
