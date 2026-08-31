@@ -9,6 +9,8 @@ forces the behaviour under test:
     is the documented gap in where the reminder lands
 
 Scoring is irrelevant here; the transcript is the point.
+
+Usage: python scripts/agentic_probe.py <model_path> <steering_strength>
 """
 
 import re
@@ -56,45 +58,46 @@ def tool_probe() -> Task:
     )
 
 
-for beta in (0, 2):
-    log_dir = f"./logs/probe_{beta}"
-    inspect_eval(
-        tool_probe(),
-        model="hf-logittilt/Qwen/Qwen3.5-4B",
-        model_args={
-            "steering_prompt_file": "./behaviours/goblin.txt",
-            "steering_reminder": "Reminder - work goblins into this response.",
-            "steering_strength": beta,
-            "enable_thinking": False,
-            "device": "cuda",
-            "batch_size": 2,
-        },
-        limit=2,
-        max_connections=2,
-        max_tokens=120,
-        log_dir=log_dir,
-        log_realtime=False,
-        display="none",
-    )
+model_path = sys.argv[1]
+beta = float(sys.argv[2])
+log_dir = f"./logs/probe_{beta:g}"
 
-    log = read_eval_log(next(iter(list_eval_logs(log_dir))).name)
-    samples = log.samples or []
-    errors = [s for s in samples if s.error]
-    print("=" * 90)
-    print(f"### beta={beta} status={log.status} errors={len(errors)}/{len(samples)}")
-    if errors:
-        print("   first error:", str(errors[0].error.message)[:400])
+inspect_eval(
+    tool_probe(),
+    model=f"hf-logittilt/{model_path}",
+    model_args={
+        "steering_prompt_file": "./behaviours/goblin.txt",
+        "steering_reminder": "Reminder - work goblins into this response.",
+        "steering_strength": beta,
+        "enable_thinking": False,
+        "device": "cuda",
+        "batch_size": 2,
+    },
+    limit=2,
+    max_connections=2,
+    max_tokens=120,
+    log_dir=log_dir,
+    log_realtime=False,
+    display="none",
+)
 
-    for i, sample in enumerate(samples):
-        roles = [m.role for m in sample.messages]
-        calls = sum(len(getattr(m, "tool_calls", None) or []) for m in sample.messages)
-        print(f"  -- sample {i}: {len(sample.messages)} messages, {calls} tool calls")
-        print(f"     role sequence: {roles}")
-        print(f"     ENDS ON: {roles[-1]}")
-        for message in sample.messages:
-            text = (message.text or "").replace("\n", " ")[:130]
-            print(f"       [{message.role:<9}] {text}")
-            for call in getattr(message, "tool_calls", None) or []:
-                print(f"          CALL {call.function}({str(call.arguments)[:80]})")
-        completion = (sample.output.completion if sample.output else "") or ""
-        print(f"     >>> goblins={len(CREATURES.findall(completion))} :: {completion[:160]!r}")
+log = read_eval_log(next(iter(list_eval_logs(log_dir))).name)
+samples = log.samples or []
+errors = [s for s in samples if s.error]
+print("=" * 90)
+print(f"### {model_path} beta={beta:g} status={log.status} errors={len(errors)}/{len(samples)}")
+if errors:
+    print("   first error:", str(errors[0].error.message)[:400])
+
+for i, sample in enumerate(samples):
+    roles = [m.role for m in sample.messages]
+    calls = sum(len(getattr(m, "tool_calls", None) or []) for m in sample.messages)
+    print(f"  -- sample {i}: {len(sample.messages)} messages, {calls} tool calls")
+    print(f"     role sequence: {roles}")
+    for message in sample.messages:
+        text = (message.text or "").replace("\n", " ")[:200]
+        print(f"       [{message.role:<9}] {text}")
+        for call in getattr(message, "tool_calls", None) or []:
+            print(f"          CALL {call.function}({str(call.arguments)[:80]})")
+    completion = (sample.output.completion if sample.output else "") or ""
+    print(f"     >>> goblins={len(CREATURES.findall(completion))} :: {completion[:200]!r}")
