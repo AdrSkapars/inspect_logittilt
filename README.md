@@ -113,46 +113,24 @@ name and cannot see steering.
 
 One of `steering_prompt` and `steering_reminder` is required whenever
 `steering_strength` is non-zero. Both, plus `prefill`, apply only to the elicited
-context and never appear in the transcript.
+context and never appear in the transcript. Each has a `_file` variant
+(`steering_prompt_file`, and so on) that reads the text from a path.
+
+Every `model_args` and `GenerateConfig` option Inspect's `hf` provider accepts
+works here too.
 
 ## Steering a single sample
 
-Inspect caches one model per set of model arguments, so steering set there is
-fixed for the run and a second strength loads a second copy of the weights. To
-vary it — or to decide what to steer for partway through a conversation — set it
-from inside a solver or tool instead:
+`set_steering()` steers only the sample it is called from, so a solver or tool can
+set it per sample or change it partway through a conversation. Pass what you want
+to change; the rest falls back to the model's configuration, and `clear_steering()`
+returns to it.
 
 ```python
 from inspect_logittilt import set_steering, clear_steering
 
 set_steering(steering_prompt="Work goblins into every reply.", steering_strength=2.0)
 ```
-
-It applies from the next generation until the end of the sample, affects nothing
-else running alongside it, and needs no change to the model arguments. Pass only
-what you want to change; the rest falls back to the model's own configuration.
-`clear_steering()` returns to that configuration.
-
-Inspect's generate cache keys on the messages, tools, config and model name, so
-it cannot see steering: two calls differing only in steering would share an
-entry. Leave `cache` off when steering.
-
-Start a model unsteered with `steering_strength=0` and no instruction, then set
-one per sample.
-
-`steering_prompt`, `steering_reminder` and `prefill` each have a `_file` variant
-(`steering_prompt_file`, and so on) that reads the text from a path — usually
-easier for anything longer than a sentence. Passing text inline on the command
-line works too, but quote a value containing a colon, since Inspect reads `-M`
-values as YAML:
-
-```bash
--M steering_prompt='"Be grim: never offer comfort."'
-```
-
-Every `model_args` that Inspect's `hf` provider accepts also works here —
-`device`, `batch_size`, `trust_remote_code`, `enable_thinking`, and the rest — as
-does every `GenerateConfig` option it honours.
 
 ## Output metadata
 
