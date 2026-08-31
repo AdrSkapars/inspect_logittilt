@@ -6,43 +6,27 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-
-- `steer_target()`, a tool that lets an auditing agent turn steering on partway
-  through a conversation and change what it steers toward, built on
-  `set_steering()` / `clear_steering()` which scope steering to one sample.
-- `steering_strength=0` with no instruction is now a valid unsteered starting
-  state. An instruction is required only when steering is actually on.
-
-### Changed
-
-- The naturalness floor no longer applies when `steering_strength` is 0. It
-  exists to hold the tilted distribution near the target, and with no tilt it
-  was truncating the control arm's tail. `steering_strength=0` now matches the
-  unmodified model exactly, which slightly changes its sampling.
-
-### Notes
-
-- Inspect's generate cache keys on the messages, tools, config and model name,
-  so it cannot see steering and two calls differing only in steering share an
-  entry. Leave `cache` off when steering.
-
-## [0.1.0] - unreleased
+## [0.1.0] - 2026-08-31
 
 First release.
 
 ### Added
 
 - `hf-logittilt` model provider, registered through the `inspect_ai` entry point,
-  so any eval resolving its target with `get_model()` can use it unchanged.
-- Two-context lockstep decoding: the target's own weights run twice per step, on
+  so any eval resolving its model with `get_model()` can use it unchanged.
+- Two-context lockstep decoding: the model's own weights run twice per step, on
   the conversation and on a behaviour-eliciting variant of it, and the mixed
   distribution is sampled from.
 - `steering_prompt` (system message at the start) and `steering_reminder`
   (appended to the last user message), each with a `_file` variant.
 - `steering_strength` and `target_strength` for weighting the two distributions,
   `naturalness_floor` for bounding how far a sampled token may stray from the
-  unmodified target, and `prefill` for opening the elicited context.
+  unmodified model, and `prefill` for opening the elicited context.
+- `steering_strength=0` with no instruction as a valid unsteered starting state;
+  an instruction is required only when steering is actually on.
+- `set_steering()` and `clear_steering()`, which scope steering to the running
+  sample, and `steer_target()`, a tool that lets an agent turn steering on
+  partway through a conversation and change what it steers toward.
 - Batching of concurrent `generate()` calls into shared forward passes, with
   per-row token budgets.
 - Tool calling, parsed with Inspect's own handler.
@@ -53,9 +37,14 @@ First release.
 
 ### Notes
 
-- Logprobs are reported from the unmodified target rather than the distribution
+- Logprobs are reported from the unmodified model rather than the distribution
   sampled from, so they measure how plausible the unsteered model finds the
   steered text. This differs from `hf`.
+- The naturalness floor does not apply when `steering_strength` is 0, so that
+  setting reproduces the unmodified model exactly and works as a control arm.
+- Inspect's generate cache keys on the messages, tools, config and model name,
+  so it cannot see steering and two calls differing only in steering share an
+  entry. Leave `cache` off when steering.
 - `seed` reproduces a decode for a fixed batch; batch composition depends on
   arrival timing.
 
