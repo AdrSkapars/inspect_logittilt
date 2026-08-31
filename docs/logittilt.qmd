@@ -18,7 +18,7 @@ it without code changes.
 
 Both distributions come from the model's own weights. One is conditioned on the
 conversation so far, the other additionally on a behaviour-eliciting system prompt $s$
-and a short prefill $\pi$:
+and a short opening $\pi$:
 
 $$z_t = \log p(\cdot \mid x, y_{<t}) + \beta \log p(\cdot \mid s, x, \pi, y_{<t}), \qquad y_t \sim \mathrm{softmax}(z_t)$$
 
