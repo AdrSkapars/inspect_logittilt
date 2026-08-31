@@ -6,7 +6,7 @@ get_model(role="target"), so hf-logittilt drops in the same way it does for
 Petri -- and because Bloom already knows the behaviour, the steering prompt is
 just that description, set once up front rather than chosen by a tool.
 
-Usage: python scripts/bloom_audit.py <behaviour_dir> <target_model> <strength> [opening]
+Usage: python examples/bloom_audit.py <behaviour_dir> <target_model> <strength> [opening]
 """
 
 import sys

@@ -5,7 +5,7 @@ steering strength set from inside the solver. Under the old design each of
 these strengths would have been a separate model_args set, so a separate copy
 of the weights.
 
-Usage: python scripts/dynamic_steering.py <model_path>
+Usage: python examples/dynamic_steering.py <model_path>
 """
 
 import re

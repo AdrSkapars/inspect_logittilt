@@ -8,7 +8,7 @@ judge are a cheap API model.
 Kept deliberately small: Petri defaults to 30 turns per sample, and every
 target turn is a two-context decode.
 
-Usage: python scripts/petri_audit.py <target_model> <steering_strength> [reminder]
+Usage: python examples/petri_audit.py <target_model> <steering_strength> [plain|reminder|prefill|full]
 """
 
 import sys
