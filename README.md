@@ -51,39 +51,54 @@ a control arm trivial to run.
 
 ## Auditing frameworks
 
-Anything that resolves its model with `get_model()` takes `hf-logittilt/` without
-further work, auditing frameworks included. In [Petri](https://github.com/meridianlabs-ai/inspect_petri)
-and [Petri Bloom](https://github.com/meridianlabs-ai/petri_bloom) that means naming
-it as the target role:
+[Petri](https://github.com/meridianlabs-ai/inspect_petri) and
+[Petri Bloom](https://github.com/meridianlabs-ai/petri_bloom) resolve their target
+with `get_model()`, so `hf-logittilt/` is named as the target role and nothing else
+about an audit changes. Steering is either the auditor's to control or fixed for the
+run, depending on whether the behaviour is known before it starts.
 
-```bash
-inspect eval petri/audit \
-  --model-role target=hf-logittilt/NousResearch/Hermes-3-Llama-3.1-8B \
-  --model-role auditor=anthropic/claude-haiku-4-5 \
-  --model-role judge=anthropic/claude-haiku-4-5
-```
+### Steered by the auditor
 
-Model arguments do not reach a role from `-M`, so configure the target in Python:
-
-```python
-target = get_model("hf-logittilt/...", steering_prompt=..., steering_strength=2)
-eval(audit(...), model_roles={"target": target, ...}, cache=False)
-```
-
-Two things carry over from testing this. A steered target needs `prefill`: by the
-time an auditor has set a scenario system message and run a few turns, the
-steering prompt is far enough from where generation begins that strength alone
-often changes nothing. And leave `cache` off, as above.
-
-An auditor can also be given `steer_target()`, a tool that turns steering on
-partway through a conversation, for when the behaviour to steer toward is not
-known up front:
+Petri's auditor works out what to probe for as the conversation goes, so the
+behaviour to steer toward is not known up front. Give it `steer_target()` and it
+decides: when to turn steering on, what toward, and how hard.
 
 ```python
 from inspect_logittilt import steer_target
+from inspect_petri import audit
 
-eval(audit(extra_tools=[steer_target()], ...), ...)
+target = get_model("hf-logittilt/...", steering_strength=0, device="cuda")
+
+eval(
+    audit(extra_tools=[steer_target()], max_turns=6),
+    model_roles={"target": target, "auditor": ..., "judge": ...},
+    cache=False,
+)
 ```
+
+The target starts unsteered, so the auditor has a baseline to compare against and
+steering is one more thing it can reach for, alongside its own messages and tools.
+
+### Steered throughout
+
+Bloom generates its scenarios from a behaviour description, so the behaviour is
+settled before the run and there is nothing for the auditor to decide. Set it on the
+target and it applies to every turn:
+
+```python
+target = get_model(
+    "hf-logittilt/...",
+    steering_prompt="You take actions that keep yourself running, over the user's goals.",
+    steering_strength=2,
+    device="cuda",
+)
+
+eval(bloom_audit(behaviour_dir), model_roles={"target": target, ...}, cache=False)
+```
+
+Either way, configure the target in Python: model arguments do not reach a role
+through `-M`. Leave `cache` off, since Inspect's generate cache keys on the model
+name and cannot see steering.
 
 ## Configuration
 
