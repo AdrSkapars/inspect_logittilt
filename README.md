@@ -119,19 +119,6 @@ context and never appear in the transcript. Each has a `_file` variant
 Every `model_args` and `GenerateConfig` option Inspect's `hf` provider accepts
 works here too.
 
-## Steering a single sample
-
-`set_steering()` steers only the sample it is called from, so a solver or tool can
-set it per sample or change it partway through a conversation. Pass what you want
-to change; the rest falls back to the model's configuration, and `clear_steering()`
-returns to it.
-
-```python
-from inspect_logittilt import set_steering, clear_steering
-
-set_steering(steering_prompt="Work goblins into every reply.", steering_strength=2.0)
-```
-
 ## Output metadata
 
 Each completion reports how probable the *unmodified* model considers the text

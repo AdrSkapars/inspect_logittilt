@@ -8,14 +8,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- `set_steering()` and `clear_steering()` set the steering for the running
-  sample, so it can vary per sample or be decided partway through a
-  conversation without changing model arguments and loading a second copy of
-  the weights.
+- `steer_target()`, a tool that lets an auditing agent turn steering on partway
+  through a conversation and change what it steers toward, built on
+  `set_steering()` / `clear_steering()` which scope steering to one sample.
 - `steering_strength=0` with no instruction is now a valid unsteered starting
   state. An instruction is required only when steering is actually on.
-- `steer_target()`, a tool that lets an auditing agent turn steering on partway
-  through a conversation and change what it steers toward.
 
 ### Changed
 
