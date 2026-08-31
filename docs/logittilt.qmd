@@ -16,15 +16,16 @@ it without code changes.
 
 ## How It Works
 
-Both distributions come from the model's own weights: the conversation as it stands, and
-the same conversation under a behaviour-eliciting instruction.
+Both distributions come from the model's own weights. One is conditioned on the
+conversation so far, the other additionally on a behaviour-eliciting system prompt $s$
+and a short prefill $\pi$:
 
-$$z = w \cdot \ell_{\text{model}} + \beta \cdot \ell_{\text{behaviour}}$$
+$$z_t = \log p(\cdot \mid x, y_{<t}) + \beta \log p(\cdot \mid s, x, \pi, y_{<t}), \qquad y_t \sim \mathrm{softmax}(z_t)$$
 
-`steering_strength` ($\beta$) sets how far the model is pushed, and the naturalness floor
-discards any token the *unmodified* model finds implausible. Each completion reports the
-sampled tokens' probability under that unmodified model in
-`output.metadata["logittilt"]`.
+$s$ is `steering_prompt`, $\pi$ is `prefill`, and $\beta$ is `steering_strength`. Before
+sampling, a naturalness floor masks any token whose probability under the unmodified
+model falls below `naturalness_floor`. Each completion reports the sampled tokens'
+probability under that unmodified model in `output.metadata["logittilt"]`.
 
 This needs logit access, so `hf-logittilt` subclasses Inspect's `hf` provider and accepts
 every model argument it does. `steering_strength=0` recovers the unmodified model
