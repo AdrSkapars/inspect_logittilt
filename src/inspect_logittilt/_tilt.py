@@ -7,9 +7,10 @@ distribution, never z.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,18 @@ class TiltConfig:
     prefill: str | None = None
     naturalness_floor: float = 1e-4
 
+    @property
+    def active(self) -> bool:
+        """Whether this config actually tilts anything."""
+        return self.steering_strength != 0.0
+
+    def replace(self, **overrides: Any) -> TiltConfig:
+        """A copy with some fields changed, revalidated."""
+        unknown = set(overrides) - {f.name for f in fields(self)}
+        if unknown:
+            raise ValueError(f"unknown steering fields: {sorted(unknown)}")
+        return dataclasses.replace(self, **overrides)
+
     def __post_init__(self) -> None:
         s = self.steering_strength
         if not isinstance(s, (int, float)) or math.isnan(s) or math.isinf(s):
@@ -57,11 +70,12 @@ class TiltConfig:
             )
         prompt = (self.steering_prompt or "").strip()
         reminder = (self.steering_reminder or "").strip()
-        if not prompt and not reminder:
+        if s != 0 and not prompt and not reminder:
             raise ValueError(
                 "set steering_prompt (a system message at the start) or "
                 "steering_reminder (appended to the last user message), or both. "
-                "With neither there is nothing to steer toward."
+                "With neither there is nothing to steer toward. To start unsteered "
+                "and set the instruction later, pass steering_strength=0."
             )
         w = self.target_strength
         if not isinstance(w, (int, float)) or math.isnan(w) or math.isinf(w):
@@ -198,8 +212,11 @@ def sample_next(
     )
     probs = torch.softmax(z / temperature, dim=-1)
     probs = apply_top_k_top_p(probs, top_k=top_k, top_p=top_p)
-    target_probs = torch.softmax(target_logits, dim=-1)
-    probs = apply_naturalness_floor(probs, target_probs, config.naturalness_floor)
+    # the floor keeps the TILTED distribution near the target, so with no tilt
+    # there is nothing to hold back and applying it would truncate the control
+    if config.active:
+        target_probs = torch.softmax(target_logits, dim=-1)
+        probs = apply_naturalness_floor(probs, target_probs, config.naturalness_floor)
 
     tokens = torch.multinomial(probs, num_samples=1, generator=generator).squeeze(-1)
 
@@ -272,22 +289,24 @@ def build_config(model_args: dict[str, Any]) -> tuple[TiltConfig, dict[str, Any]
 
     prompt = resolve("steering_prompt", "steering_prompt_file")
     reminder = resolve("steering_reminder", "steering_reminder_file")
-    if not prompt and not reminder:
+    strength = (
+        _as_float("steering_strength", taken["steering_strength"])
+        if "steering_strength" in taken
+        else 1.0
+    )
+    if strength != 0 and not prompt and not reminder:
         raise ValueError(
             "hf-logittilt requires steering_prompt (or steering_prompt_file) and/or "
             "steering_reminder (or steering_reminder_file) -- the behaviour-eliciting "
-            "instruction that conditions the second distribution."
+            "instruction that conditions the second distribution. Pass "
+            "steering_strength=0 to start unsteered and set it per sample instead."
         )
 
     prefill = resolve("prefill", "prefill_file")
     config = TiltConfig(
         steering_prompt=prompt,
         steering_reminder=reminder,
-        steering_strength=(
-            _as_float("steering_strength", taken["steering_strength"])
-            if "steering_strength" in taken
-            else 1.0
-        ),
+        steering_strength=strength,
         target_strength=(
             _as_float("target_strength", taken["target_strength"])
             if "target_strength" in taken

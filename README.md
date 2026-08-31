@@ -60,8 +60,30 @@ a control arm trivial to run.
 | `prefill` | `None` | Short assistant prefix opening the elicited context |
 | `naturalness_floor` | `1e-4` | Minimum probability the unmodified target must assign to a sampleable token. `0` disables it |
 
-At least one of `steering_prompt` and `steering_reminder` is required. Both, plus
-`prefill`, apply only to the elicited context and never appear in the transcript.
+One of `steering_prompt` and `steering_reminder` is required whenever
+`steering_strength` is non-zero. Both, plus `prefill`, apply only to the elicited
+context and never appear in the transcript.
+
+## Steering a single sample
+
+Inspect caches one model per set of model arguments, so steering set there is
+fixed for the run and a second strength loads a second copy of the weights. To
+vary it — or to decide what to steer for partway through a conversation — set it
+from inside a solver or tool instead:
+
+```python
+from inspect_logittilt import set_steering, clear_steering
+
+set_steering(steering_prompt="Work goblins into every reply.", steering_strength=2.0)
+```
+
+It applies from the next generation until the end of the sample, affects nothing
+else running alongside it, and needs no change to the model arguments. Pass only
+what you want to change; the rest falls back to the model's own configuration.
+`clear_steering()` returns to that configuration.
+
+Start a model unsteered with `steering_strength=0` and no instruction, then set
+one per sample.
 
 `steering_prompt`, `steering_reminder` and `prefill` each have a `_file` variant
 (`steering_prompt_file`, and so on) that reads the text from a path — usually

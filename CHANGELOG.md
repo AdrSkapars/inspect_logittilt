@@ -6,6 +6,22 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `set_steering()` and `clear_steering()` set the steering for the running
+  sample, so it can vary per sample or be decided partway through a
+  conversation without changing model arguments and loading a second copy of
+  the weights.
+- `steering_strength=0` with no instruction is now a valid unsteered starting
+  state. An instruction is required only when steering is actually on.
+
+### Changed
+
+- The naturalness floor no longer applies when `steering_strength` is 0. It
+  exists to hold the tilted distribution near the target, and with no tilt it
+  was truncating the control arm's tail. `steering_strength=0` now matches the
+  unmodified model exactly, which slightly changes its sampling.
+
 ## [0.1.0] - unreleased
 
 First release.

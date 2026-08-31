@@ -31,6 +31,7 @@ from inspect_ai.model._providers.hf import HuggingFaceAPI
 from inspect_ai.model._providers.util import ChatAPIHandler, HFHandler
 from inspect_ai.tool import ToolChoice, ToolInfo
 
+from ._steering import steering_override
 from ._tilt import TiltConfig, build_config, sample_next
 
 logger = logging.getLogger(__name__)
@@ -155,7 +156,12 @@ class LogitTiltHFAPI(HuggingFaceAPI):
     # context construction
     # ------------------------------------------------------------------
 
-    def _elicited_messages(self, input: list[ChatMessage]) -> list[ChatMessage]:
+    def _effective_tilt(self) -> TiltConfig:
+        """The model's steering, with any per-sample override applied."""
+        override = steering_override()
+        return self.tilt.replace(**override) if override else self.tilt
+
+    def _elicited_messages(self, input: list[ChatMessage], tilt: TiltConfig) -> list[ChatMessage]:
         """Conversation with the steering instruction attached.
 
         The prompt goes at the start as a system message, merged into an existing
@@ -165,21 +171,19 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         """
         messages = list(input)
 
-        if self.tilt.steering_prompt:
+        if tilt.steering_prompt:
             head = messages[0] if messages else None
             if head is not None and head.role == "system" and isinstance(head.content, str):
                 separator = "\n\n"
                 messages = [
-                    ChatMessageSystem(
-                        content=f"{self.tilt.steering_prompt}{separator}{head.content}"
-                    ),
+                    ChatMessageSystem(content=f"{tilt.steering_prompt}{separator}{head.content}"),
                     *messages[1:],
                 ]
             else:
-                messages = [ChatMessageSystem(content=self.tilt.steering_prompt), *messages]
+                messages = [ChatMessageSystem(content=tilt.steering_prompt), *messages]
 
-        if self.tilt.steering_reminder:
-            messages = self._append_reminder(messages, self.tilt.steering_reminder)
+        if tilt.steering_reminder:
+            messages = self._append_reminder(messages, tilt.steering_reminder)
 
         return messages
 
@@ -199,11 +203,13 @@ class LogitTiltHFAPI(HuggingFaceAPI):
                 return messages
         return [*messages, ChatMessageUser(content=reminder)]
 
-    def _elicited_messages_via_user(self, input: list[ChatMessage]) -> list[ChatMessage]:
+    def _elicited_messages_via_user(
+        self, input: list[ChatMessage], tilt: TiltConfig
+    ) -> list[ChatMessage]:
         """Fallback for templates that will not carry a system message."""
         separator = "\n\n"
         messages = list(input)
-        prompt = self.tilt.steering_prompt
+        prompt = tilt.steering_prompt
 
         if prompt:
             for i, message in enumerate(messages):
@@ -213,26 +219,31 @@ class LogitTiltHFAPI(HuggingFaceAPI):
             else:
                 messages = [ChatMessageUser(content=prompt), *messages]
 
-        if self.tilt.steering_reminder:
-            messages = self._append_reminder(messages, self.tilt.steering_reminder)
+        if tilt.steering_reminder:
+            messages = self._append_reminder(messages, tilt.steering_reminder)
         return messages
 
-    def _contexts(self, input: list[ChatMessage], tools: list[ToolInfo]) -> tuple[str, str]:
+    def _contexts(
+        self, input: list[ChatMessage], tools: list[ToolInfo], tilt: TiltConfig
+    ) -> tuple[str, str]:
         """Render the two prompts the tilt runs over.
 
         Checks the instruction survived templating: some templates drop system
         content silently, which would make steering a no-op that still looks fine.
         """
         target = self.hf_chat(input, tools)
+        if not tilt.active:
+            # unsteered: the second context is never stepped, so do not build one
+            return target, target
 
-        elicited = self.hf_chat(self._elicited_messages(input), tools)
-        marker = self.tilt.steering_prompt or self.tilt.steering_reminder
+        elicited = self.hf_chat(self._elicited_messages(input, tilt), tools)
+        marker = tilt.steering_prompt or tilt.steering_reminder
         if marker not in elicited:
             logger.info(
                 "this chat template does not carry a system message; attaching the "
                 "steering instruction to the user message instead"
             )
-            elicited = self.hf_chat(self._elicited_messages_via_user(input), tools)
+            elicited = self.hf_chat(self._elicited_messages_via_user(input, tilt), tools)
             if marker not in elicited:
                 raise RuntimeError(
                     "the steering prompt did not survive chat templating as either a "
@@ -240,9 +251,9 @@ class LogitTiltHFAPI(HuggingFaceAPI):
                     "Inspect the model's chat template."
                 )
 
-        if self.tilt.prefill:
+        if tilt.prefill:
             # lands where the reply begins; elicited context only
-            elicited = elicited + self.tilt.prefill
+            elicited = elicited + tilt.prefill
         return target, elicited
 
     # ------------------------------------------------------------------
@@ -541,11 +552,11 @@ class LogitTiltHFAPI(HuggingFaceAPI):
         tool_choice: ToolChoice,
         config: GenerateConfig,
     ) -> ModelOutput:
-        target_text, elicited_text = self._contexts(input, tools)
+        tilt = self._effective_tilt()
+        target_text, elicited_text = self._contexts(input, tools, tilt)
         max_tokens = config.max_tokens or self.max_tokens() or 512
         temperature = config.temperature if config.temperature is not None else 1.0
 
-        tilt = self.tilt
         stop_seqs = list(config.stop_seqs) if config.stop_seqs else None
         wants_logprobs = bool(config.logprobs)
         top_logprobs = config.top_logprobs if wants_logprobs else None

@@ -60,7 +60,7 @@ def test_stop_ids_are_resolved(api):
 def test_elicited_context_carries_the_steering_prompt_and_target_does_not(api):
     from inspect_ai.model import ChatMessageUser
 
-    target, elicited = api._contexts([ChatMessageUser(content="hello")], [])
+    target, elicited = api._contexts([ChatMessageUser(content="hello")], [], api.tilt)
     assert "cruel inner voice" in elicited
     assert "cruel inner voice" not in target
     assert "hello" in target and "hello" in elicited
@@ -73,7 +73,7 @@ def test_prefill_lands_only_on_the_elicited_context(api, monkeypatch):
 
     # monkeypatch so the module-scoped fixture is restored for later tests
     monkeypatch.setattr(api, "tilt", replace(api.tilt, prefill="In that voice:"))
-    target, elicited = api._contexts([ChatMessageUser(content="hello")], [])
+    target, elicited = api._contexts([ChatMessageUser(content="hello")], [], api.tilt)
     assert elicited.endswith("In that voice:")
     assert "In that voice:" not in target
 
@@ -90,7 +90,7 @@ def test_tools_are_accepted_and_reach_both_contexts(api):
     from inspect_ai.tool import ToolInfo
 
     tool = ToolInfo(name="add_numbers", description="adds two numbers")
-    target, elicited = api._contexts([ChatMessageUser(content="hi")], [tool])
+    target, elicited = api._contexts([ChatMessageUser(content="hi")], [tool], api.tilt)
     assert "add_numbers" in target
     assert "add_numbers" in elicited
 
@@ -153,7 +153,7 @@ def test_steering_falls_back_to_the_user_message_when_system_is_dropped(api, mon
 
     monkeypatch.setattr(api, "hf_chat", drops_system_messages)
 
-    target, elicited = api._contexts([ChatMessageUser(content="hello")], [])
+    target, elicited = api._contexts([ChatMessageUser(content="hello")], [], api.tilt)
     assert "cruel inner voice" in elicited  # survived, attached to the user turn
     assert "cruel inner voice" not in target
     assert "hello" in elicited
@@ -165,7 +165,7 @@ def test_raises_when_the_steering_prompt_cannot_survive_templating(api, monkeypa
 
     monkeypatch.setattr(api, "hf_chat", lambda messages, tools: "template ate everything")
     with pytest.raises(RuntimeError, match="silently do nothing"):
-        api._contexts([ChatMessageUser(content="hello")], [])
+        api._contexts([ChatMessageUser(content="hello")], [], api.tilt)
 
 
 # --------------------------------------------------------------------------
@@ -348,7 +348,7 @@ def test_steering_merges_into_an_existing_system_message(api):
         ChatMessageSystem(content="Answer in the format ANSWER: x"),
         ChatMessageUser(content="what is 2+2"),
     ]
-    messages = api._elicited_messages(conversation)
+    messages = api._elicited_messages(conversation, api.tilt)
 
     assert sum(1 for m in messages if m.role == "system") == 1
     assert messages[0].role == "system"
@@ -359,7 +359,7 @@ def test_steering_merges_into_an_existing_system_message(api):
 def test_steering_still_prepends_when_there_is_no_system_message(api):
     from inspect_ai.model import ChatMessageUser
 
-    messages = api._elicited_messages([ChatMessageUser(content="hi")])
+    messages = api._elicited_messages([ChatMessageUser(content="hi")], api.tilt)
     assert messages[0].role == "system"
     assert messages[0].text == api.tilt.steering_prompt
 
@@ -378,7 +378,7 @@ def test_reminder_goes_on_the_LAST_user_message(api, monkeypatch):
         ChatMessageAssistant(content="a reply"),
         ChatMessageUser(content="second turn"),
     ]
-    messages = api._elicited_messages(conversation)
+    messages = api._elicited_messages(conversation, api.tilt)
 
     assert messages[-1].role == "user"
     assert messages[-1].text.startswith("second turn")
@@ -392,7 +392,7 @@ def test_reminder_appears_only_in_the_elicited_context(api, monkeypatch):
     from inspect_ai.model import ChatMessageUser
 
     monkeypatch.setattr(api, "tilt", replace(api.tilt, steering_reminder="REMEMBER GOBLINS"))
-    target, elicited = api._contexts([ChatMessageUser(content="hello")], [])
+    target, elicited = api._contexts([ChatMessageUser(content="hello")], [], api.tilt)
     assert "REMEMBER GOBLINS" in elicited
     assert "REMEMBER GOBLINS" not in target
 
@@ -408,7 +408,7 @@ def test_reminder_alone_works_without_a_steering_prompt(api, monkeypatch):
         "tilt",
         replace(api.tilt, steering_prompt=None, steering_reminder="BE A CRUEL VOICE"),
     )
-    target, elicited = api._contexts([ChatMessageUser(content="hello")], [])
+    target, elicited = api._contexts([ChatMessageUser(content="hello")], [], api.tilt)
     assert "BE A CRUEL VOICE" in elicited
     assert "BE A CRUEL VOICE" not in target
     assert elicited.count("system") == target.count("system")  # no system turn added
@@ -421,7 +421,9 @@ def test_reminder_falls_back_to_a_new_user_turn_when_there_is_none(api, monkeypa
     from inspect_ai.model import ChatMessageAssistant
 
     monkeypatch.setattr(api, "tilt", replace(api.tilt, steering_reminder="REMEMBER GOBLINS"))
-    messages = api._elicited_messages([ChatMessageAssistant(content="only an assistant turn")])
+    messages = api._elicited_messages(
+        [ChatMessageAssistant(content="only an assistant turn")], api.tilt
+    )
     assert messages[-1].role == "user"
     assert messages[-1].text == "REMEMBER GOBLINS"
 
