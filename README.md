@@ -82,6 +82,10 @@ else running alongside it, and needs no change to the model arguments. Pass only
 what you want to change; the rest falls back to the model's own configuration.
 `clear_steering()` returns to that configuration.
 
+Inspect's generate cache keys on the messages, tools, config and model name, so
+it cannot see steering: two calls differing only in steering would share an
+entry. Leave `cache` off when steering.
+
 Start a model unsteered with `steering_strength=0` and no instruction, then set
 one per sample.
 

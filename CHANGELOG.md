@@ -15,6 +15,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `steering_strength=0` with no instruction is now a valid unsteered starting
   state. An instruction is required only when steering is actually on.
 
+### Notes
+
+- Inspect's generate cache keys on the messages, tools, config and model name,
+  so it cannot see steering and two calls differing only in steering share an
+  entry. Leave `cache` off when steering.
+
 ### Changed
 
 - The naturalness floor no longer applies when `steering_strength` is 0. It

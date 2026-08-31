@@ -9,11 +9,10 @@ from __future__ import annotations
 
 import pytest
 from inspect_ai.model import ChatMessageUser
-from inspect_ai.util import store
 from inspect_ai.util._store import Store, init_subtask_store
 
 from inspect_logittilt import clear_steering, set_steering
-from inspect_logittilt._steering import STORE_KEY, steering_override
+from inspect_logittilt._steering import steering_override
 from inspect_logittilt._tilt import TiltConfig
 
 
@@ -54,7 +53,7 @@ def test_clear_steering_drops_back_to_the_model_config():
 
 def test_set_steering_with_nothing_passed_is_a_no_op():
     set_steering()
-    assert STORE_KEY not in store()
+    assert steering_override() == {}
 
 
 def test_bad_value_raises_at_the_call_site():

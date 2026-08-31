@@ -6,19 +6,38 @@ overrides ride in the sample store instead, which is a ContextVar and so is
 already scoped to the running sample. That makes steering a property of the
 request rather than of the model, which is what an open-ended auditor needs: it
 does not know what it is steering for until the conversation is underway.
+
+Caveat: Inspect's generate cache keys on the messages, tools, config and model
+NAME, so it cannot see steering. Two calls that differ only in steering share a
+cache entry. Leave `cache` off when steering (Petri's `audit()` already
+defaults to `cache=False`).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from inspect_ai.util import store
+from inspect_ai.util import StoreModel, store_as
+from pydantic import Field
 
 from ._tilt import TiltConfig
 
-__all__ = ["clear_steering", "set_steering", "steering_override"]
+__all__ = ["LogitTiltSteering", "clear_steering", "set_steering", "steering_override"]
 
-STORE_KEY = "inspect_logittilt/steering"
+
+class LogitTiltSteering(StoreModel):
+    """Steering for the running sample. Fields left None defer to the model.
+
+    A StoreModel rather than raw store keys, so the names are namespaced and the
+    values are validated -- the interface Inspect documents for sample state.
+    """
+
+    steering_prompt: str | None = Field(default=None)
+    steering_reminder: str | None = Field(default=None)
+    steering_strength: float | None = Field(default=None)
+    target_strength: float | None = Field(default=None)
+    prefill: str | None = Field(default=None)
+    naturalness_floor: float | None = Field(default=None)
 
 
 def set_steering(
@@ -50,20 +69,26 @@ def set_steering(
     if not override:
         return
 
-    merged = {**steering_override(), **override}
     # check the values here so a bad one raises at the call site rather than
     # inside a decode several turns later. The stand-in prompt keeps the
     # "needs an instruction" rule from firing on the override alone, since the
     # model's own config may already supply one.
-    TiltConfig(**{"steering_prompt": "stand-in", **merged})
-    store().set(STORE_KEY, merged)
+    TiltConfig(**{"steering_prompt": "stand-in", **steering_override(), **override})
+
+    steering = store_as(LogitTiltSteering)
+    for name, value in override.items():
+        setattr(steering, name, value)
 
 
 def clear_steering() -> None:
     """Drop back to the steering the model was configured with."""
-    store().delete(STORE_KEY)
+    steering = store_as(LogitTiltSteering)
+    for name in LogitTiltSteering.model_fields:
+        if name not in ("store", "instance"):
+            setattr(steering, name, None)
 
 
 def steering_override() -> dict[str, Any]:
     """The overrides set for the running sample, if any."""
-    return dict(store().get(STORE_KEY) or {})
+    set_fields = store_as(LogitTiltSteering).model_dump()
+    return {name: value for name, value in set_fields.items() if value is not None}
