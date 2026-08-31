@@ -5,10 +5,13 @@ llms-description: LogitTilt raises how often a model produces the behaviour an e
 
 ## Overview
 
-Finding a rare behaviour means sampling until it turns up, and the rarer it is the more
-samples that takes. [LogitTilt](https://github.com/AdrSkapars/inspect_logittilt) tilts
-the model's own next-token distribution toward the behaviour so it turns up in far fewer,
-while a naturalness floor keeps sampling inside what the unmodified model already found
+Finding a rare model behaviour means sampling until it turns up, and the rarer it is the
+more samples that takes. Any eval input has many outputs the model might have given, and
+only some of them show what you are looking for.
+
+[LogitTilt](https://github.com/AdrSkapars/inspect_logittilt) tilts the model's own
+next-token distribution toward those outputs, so they come up in far fewer samples, while
+a naturalness floor keeps sampling inside what the unmodified model already found
 probable — so what surfaces is still something the model would plausibly have said.
 
 It is a model provider, so any eval that resolves its model through `get_model()` can use
