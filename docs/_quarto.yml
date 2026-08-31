@@ -1,0 +1,14 @@
+project:
+  type: meridianlabs-ai/inspect-docs
+
+inspect-docs:
+  title: Inspect LogitTilt
+  description: |
+    Steer a model's sampling toward a behaviour, so an eval surfaces examples of it
+    in far fewer samples than repeated sampling needs.
+  url: https://adrskapars.github.io/inspect_logittilt
+  module: inspect_logittilt
+  repo: AdrSkapars/inspect_logittilt
+  navigation:
+    - text: LogitTilt
+      href: index.qmd

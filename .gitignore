@@ -7,3 +7,9 @@ __pycache__/
 build/
 dist/
 logs/
+
+# quarto build output
+docs/_site/
+docs/.quarto/
+docs/_include.yml
+docs/reference/refs.json
