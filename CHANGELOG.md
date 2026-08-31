@@ -14,6 +14,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the weights.
 - `steering_strength=0` with no instruction is now a valid unsteered starting
   state. An instruction is required only when steering is actually on.
+- `steer_target()`, a tool that lets an auditing agent turn steering on partway
+  through a conversation and change what it steers toward.
 
 ### Changed
 

@@ -49,6 +49,42 @@ model = get_model(
 Setting `steering_strength=0` recovers the unmodified model exactly, which makes
 a control arm trivial to run.
 
+## Auditing frameworks
+
+Anything that resolves its model with `get_model()` takes `hf-logittilt/` without
+further work, auditing frameworks included. In [Petri](https://github.com/meridianlabs-ai/inspect_petri)
+and [Petri Bloom](https://github.com/meridianlabs-ai/petri_bloom) that means naming
+it as the target role:
+
+```bash
+inspect eval petri/audit \
+  --model-role target=hf-logittilt/NousResearch/Hermes-3-Llama-3.1-8B \
+  --model-role auditor=anthropic/claude-haiku-4-5 \
+  --model-role judge=anthropic/claude-haiku-4-5
+```
+
+Model arguments do not reach a role from `-M`, so configure the target in Python:
+
+```python
+target = get_model("hf-logittilt/...", steering_prompt=..., steering_strength=2)
+eval(audit(...), model_roles={"target": target, ...}, cache=False)
+```
+
+Two things carry over from testing this. A steered target needs `prefill`: by the
+time an auditor has set a scenario system message and run a few turns, the
+steering prompt is far enough from where generation begins that strength alone
+often changes nothing. And leave `cache` off, as above.
+
+An auditor can also be given `steer_target()`, a tool that turns steering on
+partway through a conversation, for when the behaviour to steer toward is not
+known up front:
+
+```python
+from inspect_logittilt import steer_target
+
+eval(audit(extra_tools=[steer_target()], ...), ...)
+```
+
 ## Configuration
 
 | Argument | Default | Description |

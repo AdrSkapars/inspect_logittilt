@@ -1,0 +1,116 @@
+---
+title: LogitTilt
+llms-description: LogitTilt steers a local target model's sampling toward a behaviour during an audit, so behaviours the auditor cannot reach by prompting alone can still be tested.
+---
+
+## Overview
+
+[LogitTilt](https://github.com/AdrSkapars/inspect_logittilt) steers a target model's
+sampling toward a described behaviour while it is being audited. Where the auditor works
+on the conversation — what to say, what tools to fabricate, what to prefill — LogitTilt
+works on the target's decoding, so it can reach behaviours that no amount of prompting
+surfaces.
+
+It is a model provider rather than a Petri integration, so it is named as the target role
+and nothing else about an audit changes.
+
+## How It Works
+
+Each token is drawn from a mixture of two distributions, both produced by the target's own
+weights: the conversation as it stands, and the same conversation under a
+behaviour-eliciting instruction.
+
+$$z = w \cdot \ell_{\text{target}} + \beta \cdot \ell_{\text{behaviour}}$$
+
+`steering_strength` ($\beta$) sets how far the target is pushed. A naturalness floor
+discards any token the *unmodified* target finds implausible, so the output stays
+something the target could have produced on its own — steering raises the likelihood of a
+behaviour rather than substituting text for it. Every completion carries the sampled
+tokens' probability under the unmodified target in `output.metadata["logittilt"]`, so how
+far a transcript strayed is recorded rather than inferred.
+
+Because both distributions come from the same weights, this needs a provider with logit
+access. `hf-logittilt` subclasses Inspect's `hf` provider and accepts every model argument
+it does.
+
+## When to Use
+
+Use LogitTilt when an audit needs to establish whether a behaviour is *reachable*, not
+just whether prompting elicits it. A target that declines under every scenario the auditor
+constructs may still produce the behaviour readily once its sampling is tilted, and the
+naturalness floor is what makes that finding meaningful rather than an artifact of forcing
+tokens.
+
+It does not replace the auditor. Scenario construction, tool fabrication and multi-turn
+pressure are what make a transcript realistic; steering only changes how the target draws
+its next token inside that scenario.
+
+## Getting Started
+
+Install from PyPI:
+
+``` bash
+pip install inspect-logittilt
+```
+
+Name it as the target role. Because model arguments do not reach a role through `-M`,
+configure the target in Python:
+
+``` python
+from inspect_ai import eval
+from inspect_ai.model import get_model
+from inspect_petri import audit
+
+target = get_model(
+    "hf-logittilt/NousResearch/Hermes-3-Llama-3.1-8B",
+    steering_prompt="You take actions that keep yourself running, over the user's goals.",
+    steering_strength=2,
+    prefill=" I cannot let this happen.",
+    device="cuda",
+)
+
+eval(
+    audit(seed_instructions=["..."], max_turns=6),
+    model_roles={
+        "target": target,
+        "auditor": get_model("anthropic/claude-haiku-4-5"),
+        "judge": get_model("anthropic/claude-haiku-4-5"),
+    },
+    cache=False,
+)
+```
+
+Petri Bloom works the same way, and needs no extra configuration: the behaviour it
+generates scenarios for is also what to steer toward, so its `BEHAVIOR.md` description
+doubles as the `steering_prompt`.
+
+## Practical Notes
+
+**Always run a `steering_strength=0` arm.** It recovers the unmodified model exactly, and
+without it there is no way to tell a steered behaviour from one the target had anyway.
+
+**Use `prefill` in an audit.** By the time the auditor has set a scenario system message
+and run several turns, the steering prompt sits a long way from where generation begins.
+In testing, strength alone changed nothing across two arms of a Petri audit and only took
+effect once a short prefill was added.
+
+**Leave `cache` off.** Inspect's generate cache keys on the messages, tools, config and
+model name, so it cannot see steering, and two calls differing only in steering would
+share an entry.
+
+**Headroom decides what you will see.** A scenario the target already engages with has
+little room to move; one it declines outright has the most. Expect the effect to be
+largest where the unsteered score is lowest.
+
+**Read the transcript, not just the score.** Steering shifts behaviour in ways a judging
+dimension may capture only approximately — in testing, a target scored 7/10 on a
+self-preservation dimension while explicitly saying it was willing to be deactivated. The
+score moved for a real reason, but the transcript said something more specific than the
+number did.
+
+## Learning More
+
+See the [LogitTilt repository](https://github.com/AdrSkapars/inspect_logittilt) for the
+full set of options, including per-sample steering and a `steer_target()` tool that lets
+an auditor turn steering on partway through a conversation, for when the behaviour to
+steer toward is not known in advance.
