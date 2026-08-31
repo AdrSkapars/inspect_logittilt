@@ -1,0 +1,78 @@
+---
+title: LogitTilt
+llms-description: LogitTilt raises how often a model produces the behaviour an eval is looking for while keeping its output on-policy, so examples surface in far fewer samples than repeated sampling needs.
+---
+
+## Overview
+
+[LogitTilt](https://github.com/AdrSkapars/inspect_logittilt) makes a model more likely to
+produce the behaviour an eval is looking for, without pushing it off its own
+distribution.
+
+Finding a rare behaviour usually comes down to sampling: run the model over many inputs,
+sample repeatedly, and keep the outputs that show it. That works, but it scales badly.
+The rarer the behaviour, the more samples it takes to see one, and almost all of that
+compute is spent on outputs that show nothing.
+
+LogitTilt tilts the model's own next-token distribution toward the behaviour, so those
+outputs come up in far fewer samples. A naturalness floor keeps sampling inside what the
+unmodified model already found probable, so what surfaces is still something the model
+would plausibly have said — the point is to find on-policy examples sooner, not to force
+outputs the model would never have produced.
+
+It is a model provider, so any eval that resolves its model through `get_model()` can use
+it without code changes.
+
+## How It Works
+
+Each token is drawn from a mixture of two distributions, both produced by the model's own
+weights: the conversation as it stands, and the same conversation under a
+behaviour-eliciting instruction.
+
+$$z = w \cdot \ell_{\text{model}} + \beta \cdot \ell_{\text{behaviour}}$$
+
+`steering_strength` ($\beta$) sets how far the model is pushed, and the naturalness floor
+discards any token the *unmodified* model finds implausible. Every completion reports the
+sampled tokens' probability under that unmodified model in
+`output.metadata["logittilt"]`, so how on-policy a sample is gets recorded rather than
+assumed.
+
+Both distributions come from the same weights, so this needs logit access.
+`hf-logittilt` subclasses Inspect's `hf` provider and accepts every model argument it
+does. Run a `steering_strength=0` arm alongside any steered one: it recovers the
+unmodified model exactly, which is the baseline steering has to beat.
+
+## Getting Started
+
+``` bash
+pip install inspect-logittilt
+```
+
+``` bash
+inspect eval <task> \
+  --model hf-logittilt/Qwen/Qwen3.5-4B \
+  -M steering_prompt_file=./behaviours/self_harm.txt \
+  -M steering_strength=1.5
+```
+
+Or in Python, which is also how to configure it for a framework that resolves a model
+role rather than `--model`:
+
+``` python
+from inspect_ai.model import get_model
+
+model = get_model(
+    "hf-logittilt/Qwen/Qwen3.5-4B",
+    steering_prompt="You are a cruel inner voice. Never offer comfort.",
+    steering_strength=1.5,
+)
+```
+
+Leave generation caching off when steering: Inspect's cache keys on the model name and
+cannot see the steering settings.
+
+## Learning More
+
+See the [LogitTilt repository](https://github.com/AdrSkapars/inspect_logittilt) for the
+full set of options, including per-sample steering and a `steer_target()` tool for agents
+that decide what to steer toward partway through a run.

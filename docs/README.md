@@ -1,12 +1,18 @@
 # Docs
 
-`petri-logittilt.qmd` is a draft of the extension page for the Petri
-documentation, kept here until it is ready to submit.
+`logittilt.qmd` is a draft documentation page for the extension, written to be
+framework-neutral: it is about surfacing behaviours in fewer samples than
+repeated sampling needs, which applies to any eval, not only auditing.
 
-Submitting it means opening a PR on
-[inspect_petri](https://github.com/meridianlabs-ai/inspect_petri) that adds the
-file at `docs/extensions/petri-logittilt.qmd` and a line to `docs/_quarto.yml`
-alongside the existing `petri-bloom.qmd` and `petri-dish.qmd` entries.
+Where it should go is undecided. Inspect's own docs have no slot for a
+third-party extension: `extensions.qmd` documents the extension *types*, and
+every provider in `providers.qmd` ships inside `inspect_ai` itself. So placing
+it there means either asking the maintainers for a community-extensions
+section, or upstreaming the provider.
 
-Not before this package is on PyPI: the page tells people to `pip install
+[Petri](https://github.com/meridianlabs-ai/inspect_petri) does have that slot,
+at `docs/extensions/`, alongside the `petri-bloom` and `petri-dish` pages for
+other external packages.
+
+Either way, not before this package is on PyPI: the page says `pip install
 inspect-logittilt`.
