@@ -32,7 +32,8 @@ listing renders client-side, so fetching the HTML as text shows nothing.
 
 Entries live in `docs/extensions/extensions.yml` in `UKGovernmentBEIS/inspect_ai`.
 `extensions.json` is generated from that YAML at build time, so do not edit it.
-Their CONTRIBUTING calls this "a one-line PR". Ours, agreed and ready to submit:
+Their CONTRIBUTING calls this "a one-line PR". Ours was merged on 2026-08-31 as
+UKGovernmentBEIS/inspect_ai#5144:
 
 ```yaml
 - name: "[Inspect LogitTilt](https://adrskapars.github.io/inspect_logittilt/)"
@@ -43,5 +44,5 @@ Their CONTRIBUTING calls this "a one-line PR". Ours, agreed and ready to submit:
   categories: ["Tooling"]
 ```
 
-Waiting on the arXiv announcement, so the docs site the entry points at can cite
-the paper. The blog post follows once both are done.
+The listing is rebuilt when they next deploy their docs, which tracks their
+release cadence rather than merges to main, so it lags the merge by up to a week.

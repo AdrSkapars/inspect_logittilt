@@ -155,5 +155,16 @@ Tests that load a model are skipped on CI, following the convention in
 
 ## Citation
 
-The method is introduced in BLOOM-WILT:
-<https://github.com/AdrSkapars/bloom-wilt>
+The method is introduced in BLOOM-WILT ([arXiv:2608.31105](https://arxiv.org/abs/2608.31105), [code](https://github.com/AdrSkapars/bloom-wilt)):
+
+```bibtex
+@misc{skapars2026bloomwiltlogittiltingbehaviour,
+      title={BLOOM-WILT: Logit Tilting for Behaviour Elicitation in Automated LLM Auditing}, 
+      author={Adrians Skapars and Edoardo Manino},
+      year={2026},
+      eprint={2608.31105},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2608.31105}, 
+}
+```

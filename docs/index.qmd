@@ -72,6 +72,20 @@ See the [LogitTilt repository](https://github.com/AdrSkapars/inspect_logittilt) 
 full set of options, including per-sample steering and a `steer_target()` tool for agents
 that decide what to steer toward partway through a run.
 
-The method is introduced in
-[BLOOM-WILT](https://github.com/AdrSkapars/bloom-wilt), which also holds the research code
-and the published audit transcripts.
+The method is introduced in BLOOM-WILT ([arXiv:2608.31105](https://arxiv.org/abs/2608.31105)), whose
+[repository](https://github.com/AdrSkapars/bloom-wilt) also holds the research code and the
+published audit transcripts.
+
+## Citation
+
+```bibtex
+@misc{skapars2026bloomwiltlogittiltingbehaviour,
+      title={BLOOM-WILT: Logit Tilting for Behaviour Elicitation in Automated LLM Auditing}, 
+      author={Adrians Skapars and Edoardo Manino},
+      year={2026},
+      eprint={2608.31105},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2608.31105}, 
+}
+```
