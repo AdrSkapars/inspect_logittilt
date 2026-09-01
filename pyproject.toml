@@ -54,3 +54,5 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
+# vendored third-party Quarto template; not ours to reformat
+extend-exclude = ["docs/_extensions"]
